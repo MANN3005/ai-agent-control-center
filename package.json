@@ -1,0 +1,26 @@
+{
+  "private": true,
+  "name": "ai-agent-control-center",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+  "dev": "concurrently -n API,WEB -c auto \"npm --prefix api run dev\" \"npm --prefix web run dev\"",
+  "install:all": "npm --prefix api i && npm --prefix web i"
+},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MANN3005/ai-agent-control-center.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/MANN3005/ai-agent-control-center/issues"
+  },
+  "homepage": "https://github.com/MANN3005/ai-agent-control-center#readme",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

@@ -1,0 +1,32 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum PolicyMode {
+  AUTO
+  CONFIRM
+  STEP_UP
+}
+
+model ToolPolicy {
+  id        String     @id @default(cuid())
+  userId    String
+  toolName  String
+  riskLevel RiskLevel
+  mode      PolicyMode
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([userId, toolName])
+}
