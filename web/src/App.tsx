@@ -500,6 +500,100 @@ export default function App() {
     </div>
   );
 
+  function renderAgentOutput(result: any) {
+    const payload = result?.response?.result;
+    if (!payload) return null;
+
+    if (Array.isArray(payload.issues)) {
+      return (
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">#</th>
+              <th align="left">Title</th>
+              <th align="left">State</th>
+              <th align="left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {payload.issues.map((issue: any) => (
+              <tr key={issue.id}>
+                <td>{issue.number}</td>
+                <td>{issue.title}</td>
+                <td>{issue.state}</td>
+                <td>
+                  <a href={issue.htmlUrl} target="_blank" rel="noreferrer">
+                    Open
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    if (Array.isArray(payload.repos)) {
+      return (
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">Name</th>
+              <th align="left">Owner</th>
+              <th align="left">Private</th>
+              <th align="left">Updated</th>
+              <th align="left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {payload.repos.map((repo: any) => (
+              <tr key={repo.id}>
+                <td>{repo.fullName ?? repo.name}</td>
+                <td>{repo.owner ?? ""}</td>
+                <td>{String(repo.private)}</td>
+                <td>{repo.updatedAt}</td>
+                <td>
+                  <a href={repo.htmlUrl} target="_blank" rel="noreferrer">
+                    Open
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    if (payload.issue) {
+      return (
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">#</th>
+              <th align="left">Title</th>
+              <th align="left">State</th>
+              <th align="left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{payload.issue.number}</td>
+              <td>{payload.issue.title}</td>
+              <td>{payload.issue.state}</td>
+              <td>
+                <a href={payload.issue.htmlUrl} target="_blank" rel="noreferrer">
+                  Open
+                </a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      );
+    }
+
+    return null;
+  }
+
   const agentSection = (
     <div className="section-card">
       <h2>Agent Runner (Groq)</h2>
@@ -523,7 +617,24 @@ export default function App() {
       {agentResult && (
         <div className="card">
           <h3>Agent Result</h3>
-          <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(agentResult, null, 2)}</pre>
+          <div className="agent-summary">
+            <div>
+              <div className="meta-label">Status</div>
+              <div className="meta-value">{agentResult.status}</div>
+            </div>
+            {typeof agentResult.stepIndex === "number" && (
+              <div>
+                <div className="meta-label">Step</div>
+                <div className="meta-value">{agentResult.stepIndex + 1}</div>
+              </div>
+            )}
+            {agentResult.response?.reason && (
+              <div>
+                <div className="meta-label">Reason</div>
+                <div className="meta-value">{agentResult.response.reason}</div>
+              </div>
+            )}
+          </div>
 
           {agentSteps.length > 0 && (
             <div style={{ marginTop: 12 }}>
@@ -572,6 +683,14 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+              {agentResults.map((result: any, idx: number) => (
+                <div key={`output-${idx}`} style={{ marginTop: 12 }}>
+                  <div className="meta-label">Step {idx + 1} output</div>
+                  {renderAgentOutput(result) || (
+                    <div style={{ color: "var(--muted)" }}>No output.</div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
@@ -593,6 +712,11 @@ export default function App() {
               </button>
             </div>
           )}
+
+          <details style={{ marginTop: 12 }}>
+            <summary>Show raw response</summary>
+            <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(agentResult, null, 2)}</pre>
+          </details>
         </div>
       )}
     </div>
@@ -677,22 +801,27 @@ export default function App() {
   );
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div>
+    <div className="app shell">
+      <aside className="sidebar">
+        <div className="brand">
           <div className="eyebrow">Secure Agentic Ops</div>
-          <h1 className="title">AI Agent Control Center</h1>
-          <div className="subtitle">Policy-gated tool execution with audit trails</div>
+          <div className="brand-title">AI Agent Control Center</div>
         </div>
-        <div className="header-right">
-          <nav className="nav-links">
-            <NavLink to="/">Home</NavLink>
-            <NavLink to="/allow-list">Allow-list</NavLink>
-            <NavLink to="/policies">Policies</NavLink>
-            <NavLink to="/tools">Tools</NavLink>
-            <NavLink to="/agent">Agent</NavLink>
-            <NavLink to="/audit">Audit</NavLink>
-          </nav>
+        <nav className="side-nav">
+          <NavLink to="/">Home</NavLink>
+          <NavLink to="/allow-list">Allow-list</NavLink>
+          <NavLink to="/policies">Policies</NavLink>
+          <NavLink to="/tools">Tools</NavLink>
+          <NavLink to="/agent">Agent</NavLink>
+          <NavLink to="/audit">Audit</NavLink>
+        </nav>
+      </aside>
+      <div className="content">
+        <header className="topbar">
+          <div>
+            <h1 className="title">Control Plane</h1>
+            <div className="subtitle">Policy-gated tool execution with audit trails</div>
+          </div>
           <div className="auth-row">
             {!isAuthenticated ? (
               <button
@@ -722,10 +851,9 @@ export default function App() {
               </>
             )}
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="page">
+        <main className="page">
         {!isAuthenticated ? (
           loginCard
         ) : (
@@ -763,7 +891,8 @@ export default function App() {
             </Routes>
           </>
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

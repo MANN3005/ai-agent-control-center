@@ -19,7 +19,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       authorizationParams={{
         redirect_uri: window.location.origin,
         audience,
+        scope: "openid profile email offline_access",
       }}
+      useRefreshTokens
+      useRefreshTokensFallback
     >
       <BrowserRouter>
         <App />

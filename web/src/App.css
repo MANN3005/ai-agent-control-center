@@ -1,6 +1,61 @@
 .app {
   min-height: 100vh;
-  padding: 32px 40px 80px;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 24px;
+  padding: 28px 32px 60px;
+}
+
+.sidebar {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  padding: 20px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  height: fit-content;
+}
+
+.brand {
+  padding: 4px 8px 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+
+.brand-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin-top: 6px;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.side-nav a {
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.side-nav a.active,
+.side-nav a:hover {
+  color: var(--accent-2);
+  background: #eef3fb;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .topbar {
@@ -14,16 +69,10 @@
   box-shadow: var(--shadow);
   border-radius: 16px;
   position: sticky;
-  top: 16px;
+  top: 24px;
   z-index: 10;
 }
 
-.header-right {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
-}
 
 .eyebrow {
   font-size: 0.85rem;
@@ -42,24 +91,6 @@
   margin-top: 4px;
 }
 
-.nav-links {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  font-weight: 600;
-}
-
-.nav-links a {
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: var(--muted);
-}
-
-.nav-links a.active,
-.nav-links a:hover {
-  color: var(--accent-2);
-  background: #eef3fb;
-}
 
 .auth-row {
   display: flex;
@@ -191,17 +222,41 @@ h2 {
   margin-top: 6px;
 }
 
+.agent-summary {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.meta-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+
+.meta-value {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
 @media (max-width: 900px) {
-  .app {
-    padding: 24px 18px 60px;
+  .shell {
+    grid-template-columns: 1fr;
+    padding: 20px 16px 60px;
+  }
+
+  .sidebar {
+    position: static;
   }
 
   .topbar {
     flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .header-right {
     align-items: flex-start;
   }
 }
