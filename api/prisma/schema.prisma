@@ -46,3 +46,33 @@ model AllowedResource {
   @@unique([userId, provider, resourceType, resourceId])
 }
 
+enum Decision {
+  ALLOWED
+  DENIED
+  CONFIRM_REQUIRED
+  STEP_UP_REQUIRED
+  ERROR
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  requestId  String
+  toolName   String
+  inputJson  String
+  decision   Decision
+  reason     String?
+  executed   Boolean  @default(false)
+  resultJson String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model StepUpSession {
+  id        String   @id @default(cuid())
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+}
+

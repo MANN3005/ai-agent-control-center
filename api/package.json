@@ -14,12 +14,15 @@
   "type": "commonjs",
   "dependencies": {
     "@prisma/client": "^6.19.2",
+    "auth0": "^4.23.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-oauth2-jwt-bearer": "^1.7.4",
+    "express-rate-limit": "^7.4.0",
+    "openai": "^4.89.0",
     "prisma": "^6.19.2",
-    "zod": "^4.3.6"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
