@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
+import { auth } from "express-oauth2-jwt-bearer";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -10,9 +11,16 @@ const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
-// TEMP user (we will replace with Auth0 later)
+const checkJwt = auth({
+  issuerBaseURL: `https://${process.env.AUTH0_DOMAIN}`,
+  audience: process.env.AUTH0_AUDIENCE,
+});
+
+app.use(checkJwt);
+
 app.use((req, _res, next) => {
-  (req as any).userId = "auth0|demo-user";
+  const authReq = req as any;
+  authReq.userId = authReq.auth?.payload?.sub;
   next();
 });
 
@@ -28,6 +36,18 @@ app.get("/policies", async (req, res) => {
   res.json(policies);
 });
 
+app.get("/allowed-resources", async (req, res) => {
+  const userId = (req as any).userId as string;
+  const provider = String(req.query.provider || "github");
+  const resourceType = String(req.query.resourceType || "repo");
+
+  const items = await prisma.allowedResource.findMany({
+    where: { userId, provider: provider as any, resourceType },
+    orderBy: { createdAt: "desc" },
+  });
+
+  res.json(items.map((i) => i.resourceId));
+});
 const PutPoliciesBody = z.object({
   policies: z.array(
     z.object({
@@ -55,6 +75,65 @@ app.put("/policies", async (req, res) => {
       },
     })
   );
+
+  app.get("/allowed-resources", async (req, res) => {
+  const userId = (req as any).userId as string;
+  const provider = String(req.query.provider || "github");
+  const resourceType = String(req.query.resourceType || "repo");
+
+  const items = await prisma.allowedResource.findMany({
+    where: { userId, provider: provider as any, resourceType },
+    orderBy: { createdAt: "desc" },
+  });
+
+  res.json(items.map((i) => i.resourceId));
+});
+
+// ===== Allowed Resources =====
+
+app.get("/allowed-resources", async (req, res) => {
+  const userId = (req as any).userId as string;
+  const provider = String(req.query.provider || "github");
+  const resourceType = String(req.query.resourceType || "repo");
+
+  const items = await prisma.allowedResource.findMany({
+    where: { userId, provider: provider as any, resourceType },
+    orderBy: { createdAt: "desc" },
+  });
+
+  res.json(items.map((i) => i.resourceId));
+});
+
+const PutAllowedBody = z.object({
+  provider: z.enum(["github"]),
+  resourceType: z.string().min(1),
+  resources: z.array(z.string().min(1)),
+});
+
+app.put("/allowed-resources", async (req, res) => {
+  const userId = (req as any).userId as string;
+  const parsed = PutAllowedBody.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json(parsed.error);
+
+  const { provider, resourceType, resources } = parsed.data;
+
+  await prisma.allowedResource.deleteMany({
+    where: { userId, provider: provider as any, resourceType },
+  });
+
+  if (resources.length) {
+    await prisma.allowedResource.createMany({
+      data: resources.map((r) => ({
+        userId,
+        provider: provider as any,
+        resourceType,
+        resourceId: r,
+      })),
+    });
+  }
+
+  res.json({ ok: true, count: resources.length });
+});
 
   await prisma.$transaction(ops);
   const updated = await prisma.toolPolicy.findMany({ where: { userId } });

@@ -30,3 +30,19 @@ model ToolPolicy {
 
   @@unique([userId, toolName])
 }
+
+enum Provider {
+  github
+}
+
+model AllowedResource {
+  id           String   @id @default(cuid())
+  userId       String
+  provider     Provider
+  resourceType String   // "repo"
+  resourceId   String   // e.g. "org/name"
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, provider, resourceType, resourceId])
+}
+
