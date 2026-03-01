@@ -5,9 +5,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-  "dev": "concurrently -n API,WEB -c auto \"npm --prefix api run dev\" \"npm --prefix web run dev\"",
-  "install:all": "npm --prefix api i && npm --prefix web i"
-},
+    "dev": "concurrently -n API,WEB -c auto \"npm --prefix api run dev\" \"npm --prefix web run dev\"",
+    "install:all": "npm --prefix api i && npm --prefix web i"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MANN3005/ai-agent-control-center.git"

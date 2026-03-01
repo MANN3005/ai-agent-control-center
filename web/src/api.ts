@@ -1,5 +1,11 @@
 const API_BASE = "http://localhost:4000";
 
+type Policy = {
+  toolName: string;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+  mode: "AUTO" | "CONFIRM" | "STEP_UP";
+};
+
 async function authedFetch(
   path: string,
   accessToken: string,
@@ -25,7 +31,7 @@ export async function getPolicies(accessToken: string) {
   return res.json();
 }
 
-export async function putPolicies(accessToken: string, policies: any[]) {
+export async function putPolicies(accessToken: string, policies: Policy[]) {
   const res = await authedFetch("/policies", accessToken, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -69,8 +75,8 @@ export async function executeTool(
   accessToken: string,
   body: {
     requestId: string;
-    tool: "list_repos" | "list_issues" | "create_issue" | "close_issue";
-    input: Record<string, any>;
+    tool: string;
+    input: Record<string, unknown>;
     approval?: { confirmed?: boolean; stepUpId?: string | null };
   },
 ) {
@@ -88,7 +94,7 @@ export async function runAgent(
   body: {
     requestId: string;
     task: string;
-    context?: Record<string, any>;
+    context?: Record<string, unknown>;
   },
 ) {
   const res = await authedFetch("/agent/run", accessToken, {
@@ -99,12 +105,16 @@ export async function runAgent(
   return res.json();
 }
 
+export async function getAgentRun(accessToken: string, runId: string) {
+  const res = await authedFetch(`/agent/runs/${runId}`, accessToken);
+  return res.json();
+}
+
 export async function continueAgent(
   accessToken: string,
   body: {
-    requestId: string;
-    stepIndex: number;
-    steps: Array<{ tool: string; input: Record<string, any> }>;
+    runId: string;
+    message?: string;
     approval?: { confirmed?: boolean; stepUpId?: string | null };
   },
 ) {
@@ -120,5 +130,11 @@ export async function continueAgent(
 export async function getAudit(accessToken: string, limit = 50) {
   const res = await authedFetch(`/audit?limit=${limit}`, accessToken);
   if (!res.ok) return []; // prevent JSON parse crash
+  return res.json();
+}
+
+// ----- identities -----
+export async function getIdentities(accessToken: string) {
+  const res = await authedFetch("/debug/identities", accessToken);
   return res.json();
 }
