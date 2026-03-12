@@ -138,3 +138,36 @@ export async function getIdentities(accessToken: string) {
   const res = await authedFetch("/debug/identities", accessToken);
   return res.json();
 }
+
+// ----- identity link/unlink -----
+export async function linkIdentity(
+  accessToken: string,
+  body: { primaryUserId: string; secondaryUserId: string; provider?: string },
+) {
+  const res = await authedFetch("/auth/link", accessToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data?.reason || "Link failed.");
+  }
+  return data;
+}
+
+export async function unlinkIdentity(
+  accessToken: string,
+  body: { provider: string; providerUserId: string },
+) {
+  const res = await authedFetch("/auth/unlink", accessToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data?.reason || "Unlink failed.");
+  }
+  return data;
+}

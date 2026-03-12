@@ -13,6 +13,8 @@ import {
   continueAgent,
   getAudit,
   getIdentities,
+  linkIdentity,
+  unlinkIdentity,
 } from "./api";
 import AgentPanel from "./components/AgentPanel";
 import AllowListSection from "./components/AllowListSection";
@@ -41,6 +43,15 @@ const DEFAULTS: Policy[] = [
   { toolName: "create_issue_and_notify", riskLevel: "HIGH", mode: "STEP_UP" },
 ];
 
+const PRIMARY_USER_KEY = "cc_primary_user_id";
+const LINK_PROVIDER_KEY = "cc_link_provider";
+const GITHUB_CONNECTION =
+  (import.meta.env.VITE_AUTH0_CONNECTION_GITHUB as string) || "github";
+const SLACK_CONNECTION =
+  (import.meta.env.VITE_AUTH0_CONNECTION_SLACK as string) || "slack";
+const GOOGLE_CONNECTION =
+  (import.meta.env.VITE_AUTH0_CONNECTION_GOOGLE as string) || "google-oauth2";
+
 function uuid() {
   return crypto.randomUUID();
 }
@@ -57,6 +68,16 @@ export default function App() {
   const [stepUpRemainingMs, setStepUpRemainingMs] = useState<number | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [identities, setIdentities] = useState<IdentityEntry[]>([]);
+  const [primaryUserId, setPrimaryUserId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(PRIMARY_USER_KEY);
+  });
+  const [linkProvider, setLinkProvider] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(LINK_PROVIDER_KEY);
+  });
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linking, setLinking] = useState(false);
 
   const [agentTask, setAgentTask] = useState("");
   const [agentRunId, setAgentRunId] = useState<string | null>(null);
@@ -91,7 +112,19 @@ export default function App() {
     setMe(meRes as Me);
     setAllowedReposText(Array.isArray(allowedRes) ? allowedRes.join("\n") : "");
     setAudit(Array.isArray(auditRes) ? (auditRes as AuditEntry[]) : []);
-    setIdentities(Array.isArray(identitiesRes?.identities) ? identitiesRes.identities : []);
+    const nextIdentities = Array.isArray(identitiesRes?.identities) ? identitiesRes.identities : [];
+    setIdentities(nextIdentities);
+    const isGooglePrimary = nextIdentities.some(
+      (identity) =>
+        identity?.provider === "google-oauth2" ||
+        identity?.provider === "google" ||
+        identity?.connection === "google" ||
+        identity?.connection === "google-oauth2",
+    );
+    if (isGooglePrimary && (meRes as Me)?.userId && typeof window !== "undefined") {
+      window.localStorage.setItem(PRIMARY_USER_KEY, (meRes as Me).userId);
+      setPrimaryUserId((meRes as Me).userId);
+    }
     if (Array.isArray(policiesRes) && policiesRes.length) {
       const merged = new Map(DEFAULTS.map((p) => [p.toolName, p]));
       (policiesRes as Policy[]).forEach((p) => merged.set(p.toolName, p));
@@ -101,6 +134,16 @@ export default function App() {
     }
     setLoading(false);
   }, [getApiToken, isAuthenticated]);
+
+  function storeLinkProvider(provider: string | null) {
+    if (typeof window === "undefined") return;
+    if (provider) {
+      window.localStorage.setItem(LINK_PROVIDER_KEY, provider);
+    } else {
+      window.localStorage.removeItem(LINK_PROVIDER_KEY);
+    }
+    setLinkProvider(provider);
+  }
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -245,6 +288,39 @@ export default function App() {
     }
   }
 
+  async function linkSecondaryToPrimary(secondaryUserId: string, provider: string) {
+    if (!primaryUserId) {
+      throw new Error("Primary account is not stored. Log in with Google first.");
+    }
+    const accessToken = await getApiToken();
+    return linkIdentity(accessToken, {
+      primaryUserId,
+      secondaryUserId,
+      provider,
+    });
+  }
+
+  function startLink(provider: "github" | "slack") {
+    const connection = provider === "github" ? GITHUB_CONNECTION : SLACK_CONNECTION;
+    setLinkError(null);
+    storeLinkProvider(provider);
+    void loginWithRedirect({
+      authorizationParams: {
+        redirect_uri: window.location.origin,
+        audience: "https://control-center-api",
+        connection,
+        prompt: "login",
+      },
+    });
+  }
+
+  async function unlinkIdentityFromDashboard(provider: string, providerUserId: string) {
+    const accessToken = await getApiToken();
+    const result = await unlinkIdentity(accessToken, { provider, providerUserId });
+    await refresh();
+    return result;
+  }
+
   const agentSteps = Array.isArray(agentRun?.steps) ? agentRun.steps : [];
   const agentTrace = Array.isArray(agentRun?.trace) ? agentRun.trace : [];
   const pendingApproval = agentSteps.find((step) => step.status === "APPROVAL_REQUIRED");
@@ -256,6 +332,71 @@ export default function App() {
     const seconds = totalSeconds % 60;
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   }, [stepUpRemainingMs]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !linkProvider || !user?.sub || !primaryUserId) return;
+    if (linking) return;
+    if (user.sub === primaryUserId) return;
+
+    let active = true;
+    setLinking(true);
+    setLinkError(null);
+
+    (async () => {
+      try {
+        await linkSecondaryToPrimary(user.sub, linkProvider);
+        storeLinkProvider(null);
+        if (!active) return;
+        await loginWithRedirect({
+          authorizationParams: {
+            redirect_uri: window.location.origin,
+            audience: "https://control-center-api",
+            connection: GOOGLE_CONNECTION,
+            prompt: "login",
+          },
+        });
+      } catch (err: any) {
+        if (!active) return;
+        setLinkError(err?.message || "Link failed.");
+        storeLinkProvider(null);
+      } finally {
+        if (active) setLinking(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [
+    isAuthenticated,
+    linkProvider,
+    user?.sub,
+    primaryUserId,
+    linking,
+    loginWithRedirect,
+  ]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !primaryUserId || !user?.sub) return;
+    if (linkProvider || linking) return;
+    if (user.sub === primaryUserId) return;
+
+    void loginWithRedirect({
+      authorizationParams: {
+        redirect_uri: window.location.origin,
+        audience: "https://control-center-api",
+        connection: GOOGLE_CONNECTION,
+        prompt: "login",
+      },
+    });
+  }, [
+    isAuthenticated,
+    primaryUserId,
+    user?.sub,
+    linkProvider,
+    linking,
+    loginWithRedirect,
+  ]);
 
   if (loading) return <div className="app">Loading...</div>;
 
@@ -286,6 +427,11 @@ export default function App() {
       stepUpActive={Boolean(stepUpId)}
       identities={identities}
       userId={me?.userId}
+      primaryUserId={primaryUserId}
+      onUnlinkIdentity={unlinkIdentityFromDashboard}
+      onStartLink={startLink}
+      linkError={linkError}
+      linking={linking}
     />
   );
 

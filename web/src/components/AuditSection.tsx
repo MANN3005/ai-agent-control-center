@@ -8,28 +8,30 @@ export default function AuditSection({ audit }: AuditSectionProps) {
   return (
     <div className="section-card">
       <h2>Audit Log (latest 25)</h2>
-      <table cellPadding={8} className="table">
-        <thead>
-          <tr>
-            <th align="left">Time</th>
-            <th align="left">Tool</th>
-            <th align="left">Decision</th>
-            <th align="left">Executed</th>
-            <th align="left">Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          {audit.map((a) => (
-            <tr key={a.id}>
-              <td>{new Date(a.createdAt).toLocaleString()}</td>
-              <td>{a.toolName}</td>
-              <td>{a.decision}</td>
-              <td>{String(a.executed)}</td>
-              <td>{a.reason ?? ""}</td>
+      <div className="table-wrap">
+        <table cellPadding={8} className="table">
+          <thead>
+            <tr>
+              <th align="left">Time</th>
+              <th align="left">Tool</th>
+              <th align="left">Decision</th>
+              <th align="left">Executed</th>
+              <th align="left">Reason</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {audit.map((a) => (
+              <tr key={a.id}>
+                <td>{new Date(a.createdAt).toLocaleString()}</td>
+                <td>{a.toolName}</td>
+                <td>{a.decision}</td>
+                <td>{String(a.executed)}</td>
+                <td>{a.reason ?? ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

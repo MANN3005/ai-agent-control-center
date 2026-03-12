@@ -28,88 +28,94 @@ function renderAgentOutput(step: AgentStep) {
 
   if (Array.isArray(payload.issues)) {
     return (
-      <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
-        <thead>
-          <tr>
-            <th align="left">#</th>
-            <th align="left">Title</th>
-            <th align="left">State</th>
-            <th align="left">Link</th>
-          </tr>
-        </thead>
-        <tbody>
-          {payload.issues.map((issue: Issue) => (
-            <tr key={issue.id}>
-              <td>{issue.number}</td>
-              <td>{issue.title}</td>
-              <td>{issue.state}</td>
-              <td>
-                <a href={issue.htmlUrl} target="_blank" rel="noreferrer">
-                  Open
-                </a>
-              </td>
+      <div className="table-wrap">
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">#</th>
+              <th align="left">Title</th>
+              <th align="left">State</th>
+              <th align="left">Link</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {payload.issues.map((issue: Issue) => (
+              <tr key={issue.id}>
+                <td>{issue.number}</td>
+                <td>{issue.title}</td>
+                <td>{issue.state}</td>
+                <td>
+                  <a href={issue.htmlUrl} target="_blank" rel="noreferrer">
+                    Open
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
   if (Array.isArray(payload.repos)) {
     return (
-      <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
-        <thead>
-          <tr>
-            <th align="left">Name</th>
-            <th align="left">Owner</th>
-            <th align="left">Private</th>
-            <th align="left">Updated</th>
-            <th align="left">Link</th>
-          </tr>
-        </thead>
-        <tbody>
-          {payload.repos.map((repo: Repo) => (
-            <tr key={repo.id}>
-              <td>{repo.fullName ?? repo.name}</td>
-              <td>{repo.owner ?? ""}</td>
-              <td>{String(repo.private)}</td>
-              <td>{repo.updatedAt}</td>
-              <td>
-                <a href={repo.htmlUrl} target="_blank" rel="noreferrer">
-                  Open
-                </a>
-              </td>
+      <div className="table-wrap">
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">Name</th>
+              <th align="left">Owner</th>
+              <th align="left">Private</th>
+              <th align="left">Updated</th>
+              <th align="left">Link</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {payload.repos.map((repo: Repo) => (
+              <tr key={repo.id}>
+                <td>{repo.fullName ?? repo.name}</td>
+                <td>{repo.owner ?? ""}</td>
+                <td>{String(repo.private)}</td>
+                <td>{repo.updatedAt}</td>
+                <td>
+                  <a href={repo.htmlUrl} target="_blank" rel="noreferrer">
+                    Open
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
   if (payload.issue) {
     return (
-      <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
-        <thead>
-          <tr>
-            <th align="left">#</th>
-            <th align="left">Title</th>
-            <th align="left">State</th>
-            <th align="left">Link</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>{payload.issue.number}</td>
-            <td>{payload.issue.title}</td>
-            <td>{payload.issue.state}</td>
-            <td>
-              <a href={payload.issue.htmlUrl} target="_blank" rel="noreferrer">
-                Open
-              </a>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div className="table-wrap">
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">#</th>
+              <th align="left">Title</th>
+              <th align="left">State</th>
+              <th align="left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{payload.issue.number}</td>
+              <td>{payload.issue.title}</td>
+              <td>{payload.issue.state}</td>
+              <td>
+                <a href={payload.issue.htmlUrl} target="_blank" rel="noreferrer">
+                  Open
+                </a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     );
   }
 
@@ -222,24 +228,26 @@ export default function AgentPanel({
           {Array.isArray(agentRun.plan) && agentRun.plan.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <h4>Plan</h4>
-              <table cellPadding={6} className="table">
-                <thead>
-                  <tr>
-                    <th align="left">Step</th>
-                    <th align="left">Tool</th>
-                    <th align="left">Input</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {agentRun.plan.map((step: AgentPlanStep, idx: number) => (
-                    <tr key={`${step.tool}-${idx}`}>
-                      <td>{idx + 1}</td>
-                      <td>{step.tool}</td>
-                      <td>{JSON.stringify(step.input)}</td>
+              <div className="table-wrap">
+                <table cellPadding={6} className="table">
+                  <thead>
+                    <tr>
+                      <th align="left">Step</th>
+                      <th align="left">Tool</th>
+                      <th align="left">Input</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {agentRun.plan.map((step: AgentPlanStep, idx: number) => (
+                      <tr key={`${step.tool}-${idx}`}>
+                        <td>{idx + 1}</td>
+                        <td>{step.tool}</td>
+                        <td>{JSON.stringify(step.input)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -260,26 +268,28 @@ export default function AgentPanel({
           {agentSteps.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <h4>Timeline</h4>
-              <table cellPadding={6} className="table">
-                <thead>
-                  <tr>
-                    <th align="left">Step</th>
-                    <th align="left">Tool</th>
-                    <th align="left">Status</th>
-                    <th align="left">Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {agentSteps.map((step: AgentStep, idx: number) => (
-                    <tr key={`${step.tool}-${idx}`}>
-                      <td>{idx + 1}</td>
-                      <td>{step.tool}</td>
-                      <td>{step.status}</td>
-                      <td>{step.reason ?? ""}</td>
+              <div className="table-wrap">
+                <table cellPadding={6} className="table">
+                  <thead>
+                    <tr>
+                      <th align="left">Step</th>
+                      <th align="left">Tool</th>
+                      <th align="left">Status</th>
+                      <th align="left">Reason</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {agentSteps.map((step: AgentStep, idx: number) => (
+                      <tr key={`${step.tool}-${idx}`}>
+                        <td>{idx + 1}</td>
+                        <td>{step.tool}</td>
+                        <td>{step.status}</td>
+                        <td>{step.reason ?? ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {agentSteps.map((step: AgentStep, idx: number) => (
                 <div key={`output-${idx}`} style={{ marginTop: 12 }}>
                   <div className="meta-label">Step {idx + 1} output</div>

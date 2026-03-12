@@ -32,6 +32,13 @@ const LinkAccountBody = z.object({
   provider: z.enum(["github", "slack", "google", "google-oauth2"]).optional(),
 });
 
+const UnlinkAccountBody = z.object({
+  provider: z.string().min(1),
+  providerUserId: z
+    .union([z.string(), z.number()])
+    .transform((value) => String(value)),
+});
+
 const PutPoliciesBody = z.object({
   policies: z.array(
     z.object({
@@ -182,6 +189,29 @@ export function registerRoutes(app: Express) {
       return res
         .status(500)
         .json({ status: "error", reason: err?.message || "Link failed" });
+    }
+  });
+
+  app.post("/auth/unlink", async (req, res) => {
+    const userId = (req as any).userId as string;
+    const parsed = UnlinkAccountBody.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json(parsed.error);
+
+    const { provider, providerUserId } = parsed.data;
+
+    try {
+      const client = getAuth0ManagementClient();
+      await client.users.unlink({
+        id: userId,
+        provider,
+        user_id: providerUserId,
+      } as any);
+
+      return res.json({ status: "unlinked" });
+    } catch (err: any) {
+      return res
+        .status(500)
+        .json({ status: "error", reason: err?.message || "Unlink failed" });
     }
   });
 

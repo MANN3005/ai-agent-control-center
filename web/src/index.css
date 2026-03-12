@@ -1,18 +1,22 @@
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
 
 :root {
-  --bg: #f7f9fc;
-  --bg-2: #ffffff;
+  --bg: #fff7ee;
+  --bg-2: #f6f0ff;
   --panel: #ffffff;
-  --panel-2: #f2f5fa;
-  --text: #0f172a;
-  --muted: #60708a;
-  --accent: #0ea5e9;
-  --accent-2: #1d4ed8;
-  --line: #dde3ee;
-  --shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+  --panel-2: #f9f4ff;
+  --panel-strong: #ffffff;
+  --text: #1b122a;
+  --muted: #6d5c7f;
+  --accent: #0aa4b2;
+  --accent-2: #1372d1;
+  --line: #efe5ff;
+  --shadow: 0 18px 40px rgba(27, 18, 42, 0.12);
+  --radius-lg: 22px;
+  --radius-md: 16px;
+  --radius-pill: 999px;
 
-  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  font-family: "Sora", system-ui, -apple-system, sans-serif;
   color: var(--text);
   background-color: var(--bg);
   text-rendering: optimizeLegibility;
@@ -26,7 +30,11 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+  background:
+    radial-gradient(900px 420px at 8% -10%, rgba(10, 164, 178, 0.18), transparent 60%),
+    radial-gradient(900px 420px at 92% 0%, rgba(19, 114, 209, 0.2), transparent 60%),
+    radial-gradient(700px 520px at 50% 115%, rgba(255, 170, 107, 0.16), transparent 60%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
 }
 
 a {
@@ -38,28 +46,6 @@ a:hover {
   color: var(--accent-2);
 }
 
-button {
-  border-radius: 10px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.1em;
-  font-size: 0.95em;
-  font-weight: 600;
-  font-family: inherit;
-  background-color: #0f172a;
-  color: #ffffff;
-  cursor: pointer;
-  transition: transform 0.15s ease, border-color 0.2s ease, background 0.2s ease;
-}
-
-button:hover {
-  border-color: var(--accent);
-  transform: translateY(-1px);
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 
 #root {
   width: 100%;
