@@ -100,7 +100,32 @@ export async function hasSlackIdentity(userId: string) {
 
 export async function findAuth0UserBySlackUserId(slackUserId: string) {
   const client = getAuth0ManagementClient();
-  const query = `identities.user_id:"${slackUserId}" AND identities.connection:"${AUTH0_SLACK_CONNECTION}"`;
+  const exactQuery = `identities.user_id:"${slackUserId}" AND identities.connection:"${AUTH0_SLACK_CONNECTION}"`;
+  const exactResponse: any = await client.users.getAll({
+    q: exactQuery,
+    search_engine: "v3",
+  } as any);
+  const exactUsers = exactResponse?.data ?? exactResponse ?? [];
+  if (Array.isArray(exactUsers) && exactUsers.length) return exactUsers[0];
+
+  // Slack identity user_id is often namespaced like sign-in-with-slack|TEAM-USER.
+  const wildcardQuery = `identities.user_id:*${slackUserId}* AND identities.connection:"${AUTH0_SLACK_CONNECTION}"`;
+  const wildcardResponse: any = await client.users.getAll({
+    q: wildcardQuery,
+    search_engine: "v3",
+  } as any);
+  const wildcardUsers = wildcardResponse?.data ?? wildcardResponse ?? [];
+  return Array.isArray(wildcardUsers) && wildcardUsers.length
+    ? wildcardUsers[0]
+    : null;
+}
+
+export async function findAuth0UserByEmail(email: string) {
+  const client = getAuth0ManagementClient();
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  const query = `email:"${normalizedEmail}"`;
   const response: any = await client.users.getAll({
     q: query,
     search_engine: "v3",

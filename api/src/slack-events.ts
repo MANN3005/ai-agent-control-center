@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type { Express, Request, Response } from "express";
 import express from "express";
 import {
+  findAuth0UserByEmail,
   findAuth0UserBySlackUserId,
   getAuth0Connections,
   getGithubAccessToken,
@@ -157,10 +158,23 @@ export default function registerSlackEvents(app: Express) {
 
       const accessToken = await getGithubAccessToken(announcement.userId);
       let githubLogin: string | null = extractGithubHandle(text);
+      let slackEmail: string | null = null;
+
+      try {
+        const email = await slackGetUserEmail(slackBotToken, slackUserId);
+        debug("Slack user email", email);
+        slackEmail = email || null;
+      } catch {
+        slackEmail = null;
+      }
+
       if (!githubLogin) {
         try {
           const { github: githubConnection } = getAuth0Connections();
-          const auth0User: any = await findAuth0UserBySlackUserId(slackUserId);
+          let auth0User: any = await findAuth0UserBySlackUserId(slackUserId);
+          if (!auth0User && slackEmail) {
+            auth0User = await findAuth0UserByEmail(slackEmail);
+          }
           const identities = Array.isArray(auth0User?.identities)
             ? auth0User.identities
             : [];
@@ -186,14 +200,12 @@ export default function registerSlackEvents(app: Express) {
           debug("Auth0 linkage lookup failed", err?.message || err);
         }
       }
-      try {
-        const email = await slackGetUserEmail(slackBotToken, slackUserId);
-        debug("Slack user email", email);
-        if (!githubLogin && email) {
-          githubLogin = await githubFindUserByEmail(accessToken, email);
+      if (!githubLogin && slackEmail) {
+        try {
+          githubLogin = await githubFindUserByEmail(accessToken, slackEmail);
+        } catch {
+          githubLogin = null;
         }
-      } catch {
-        githubLogin = null;
       }
       debug("GitHub login match", githubLogin);
 
