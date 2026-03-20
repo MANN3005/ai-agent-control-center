@@ -899,48 +899,6 @@ export async function executeToolWithPolicy(
       if (matches.length === 1 && matches[0].fullName) {
         resolvedRepo = matches[0].fullName;
         (input as any).repo = resolvedRepo;
-      } else if (matches.length === 0) {
-        const reasoning = buildDecisionReason(tool, input);
-        await prisma.auditLog.create({
-          data: {
-            userId,
-            requestId,
-            toolName: tool,
-            inputJson: JSON.stringify(input),
-            decision: "DENIED",
-            reason: `Repo not found for name: ${resolvedRepo}`,
-            reasoning,
-            executed: false,
-          },
-        });
-        return {
-          statusCode: 400,
-          body: {
-            status: "denied",
-            reason: "Repo not found in your GitHub list. Use owner/repo.",
-          },
-        };
-      } else if (matches.length > 1) {
-        const reasoning = buildDecisionReason(tool, input);
-        await prisma.auditLog.create({
-          data: {
-            userId,
-            requestId,
-            toolName: tool,
-            inputJson: JSON.stringify(input),
-            decision: "DENIED",
-            reason: `Multiple repos matched name: ${resolvedRepo}`,
-            reasoning,
-            executed: false,
-          },
-        });
-        return {
-          statusCode: 400,
-          body: {
-            status: "denied",
-            reason: "Multiple repos matched that name. Use owner/repo.",
-          },
-        };
       }
     }
 
@@ -968,6 +926,8 @@ export async function executeToolWithPolicy(
         if (!candidate) return false;
         if (candidate === resolvedLower) return true;
         if (!candidate.includes("/") && candidate === resolvedName) return true;
+        if (candidate.includes("/") && candidate.split("/").pop() === resolvedName)
+          return true;
         return false;
       });
       if (match) {
@@ -1166,48 +1126,6 @@ export async function executeToolWithPolicy(
         if (matches.length === 1 && matches[0].fullName) {
           repo = matches[0].fullName;
           (input as any).repo = repo;
-        } else if (matches.length === 0) {
-          const reasoning = buildDecisionReason(tool, input);
-          await prisma.auditLog.create({
-            data: {
-              userId,
-              requestId,
-              toolName: tool,
-              inputJson: JSON.stringify(input),
-              decision: "DENIED",
-              reason: `Repo not found for name: ${repo}`,
-              reasoning,
-              executed: false,
-            },
-          });
-          return {
-            statusCode: 400,
-            body: {
-              status: "denied",
-              reason: "Repo not found in your GitHub list. Use owner/repo.",
-            },
-          };
-        } else if (matches.length > 1) {
-          const reasoning = buildDecisionReason(tool, input);
-          await prisma.auditLog.create({
-            data: {
-              userId,
-              requestId,
-              toolName: tool,
-              inputJson: JSON.stringify(input),
-              decision: "DENIED",
-              reason: `Multiple repos matched name: ${repo}`,
-              reasoning,
-              executed: false,
-            },
-          });
-          return {
-            statusCode: 400,
-            body: {
-              status: "denied",
-              reason: "Multiple repos matched that name. Use owner/repo.",
-            },
-          };
         }
       }
 
@@ -1234,6 +1152,8 @@ export async function executeToolWithPolicy(
           if (!candidate) return false;
           if (candidate === repoLower) return true;
           if (!candidate.includes("/") && candidate === repoName) return true;
+          if (candidate.includes("/") && candidate.split("/").pop() === repoName)
+            return true;
           return false;
         });
         if (match) {

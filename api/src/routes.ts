@@ -19,11 +19,13 @@ import {
   executeToolWithPolicy,
 } from "./agent/engine";
 import {
+  getGithubAccessToken,
   getAuth0ManagementClient,
   getAuth0Connections,
   hasGithubIdentity,
   hasSlackIdentity,
 } from "./services/auth0";
+import { githubListRepos } from "./services/github";
 import { getToolIndex, listAllTools } from "./tools";
 
 const LinkAccountBody = z.object({
@@ -265,13 +267,44 @@ export function registerRoutes(app: Express) {
 
     const { provider, resourceType, resources } = parsed.data;
 
+    let normalizedResources = resources
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0);
+
+    if (provider === "github" && resourceType === "repo" && normalizedResources.length) {
+      try {
+        const githubToken = await getGithubAccessToken(userId);
+        const repos = await githubListRepos(githubToken);
+        const repoByName = new Map<string, string[]>();
+
+        for (const repo of repos) {
+          const fullName = String(repo.fullName || "").trim();
+          const shortName = String(repo.name || "").trim().toLowerCase();
+          if (!fullName || !shortName) continue;
+          const existing = repoByName.get(shortName) || [];
+          existing.push(fullName);
+          repoByName.set(shortName, existing);
+        }
+
+        normalizedResources = normalizedResources.map((value) => {
+          if (value.includes("/")) return value;
+          const matches = repoByName.get(value.toLowerCase()) || [];
+          return matches.length === 1 ? matches[0] : value;
+        });
+      } catch {
+        // If GitHub lookup fails, preserve user-provided values.
+      }
+    }
+
+    normalizedResources = Array.from(new Set(normalizedResources));
+
     await prisma.allowedResource.deleteMany({
       where: { userId, provider: provider as any, resourceType },
     });
 
-    if (resources.length) {
+    if (normalizedResources.length) {
       await prisma.allowedResource.createMany({
-        data: resources.map((r) => ({
+        data: normalizedResources.map((r) => ({
           userId,
           provider: provider as any,
           resourceType,
@@ -280,7 +313,7 @@ export function registerRoutes(app: Express) {
       });
     }
 
-    res.json({ ok: true, count: resources.length });
+    res.json({ ok: true, count: normalizedResources.length });
   });
 
   app.get("/audit", async (req, res) => {

@@ -8,6 +8,21 @@ import {
 
 let auth0ManagementClient: ManagementClient | null = null;
 
+function userHasGithubIdentity(user: any) {
+  const identities = Array.isArray(user?.identities) ? user.identities : [];
+  return identities.some((identity: any) => {
+    const provider = String(identity?.provider || "").toLowerCase();
+    const connection = String(identity?.connection || "").toLowerCase();
+    return (
+      provider === "github" ||
+      provider.includes("github") ||
+      connection === String(AUTH0_GITHUB_CONNECTION || "").toLowerCase() ||
+      connection === "github" ||
+      connection.includes("github")
+    );
+  });
+}
+
 export function getAuth0ManagementClient() {
   if (auth0ManagementClient) return auth0ManagementClient;
 
@@ -106,18 +121,35 @@ export async function findAuth0UserBySlackUserId(slackUserId: string) {
     search_engine: "v3",
   } as any);
   const exactUsers = exactResponse?.data ?? exactResponse ?? [];
-  if (Array.isArray(exactUsers) && exactUsers.length) return exactUsers[0];
+  if (Array.isArray(exactUsers) && exactUsers.length) {
+    const withGithub = exactUsers.find((user: any) => userHasGithubIdentity(user));
+    return withGithub || exactUsers[0];
+  }
 
   // Slack identity user_id is often namespaced like sign-in-with-slack|TEAM-USER.
-  const wildcardQuery = `identities.user_id:*${slackUserId}* AND identities.connection:"${AUTH0_SLACK_CONNECTION}"`;
-  const wildcardResponse: any = await client.users.getAll({
-    q: wildcardQuery,
+  // Auth0 v3 search does not allow wildcard on identities.user_id, so query by
+  // connection and match the trailing Slack user id locally.
+  const connectionQuery = `identities.connection:"${AUTH0_SLACK_CONNECTION}"`;
+  const connectionResponse: any = await client.users.getAll({
+    q: connectionQuery,
     search_engine: "v3",
+    per_page: 100,
   } as any);
-  const wildcardUsers = wildcardResponse?.data ?? wildcardResponse ?? [];
-  return Array.isArray(wildcardUsers) && wildcardUsers.length
-    ? wildcardUsers[0]
-    : null;
+  const users = connectionResponse?.data ?? connectionResponse ?? [];
+  if (!Array.isArray(users)) return null;
+
+  for (const user of users) {
+    const identities = Array.isArray(user?.identities) ? user.identities : [];
+    const match = identities.find((identity: any) => {
+      const connection = String(identity?.connection || "");
+      if (connection !== AUTH0_SLACK_CONNECTION) return false;
+      const id = String(identity?.user_id || "");
+      return id === slackUserId || id.endsWith(`-${slackUserId}`);
+    });
+    if (match) return user;
+  }
+
+  return null;
 }
 
 export async function findAuth0UserByEmail(email: string) {
@@ -131,7 +163,9 @@ export async function findAuth0UserByEmail(email: string) {
     search_engine: "v3",
   } as any);
   const users = response?.data ?? response ?? [];
-  return Array.isArray(users) && users.length ? users[0] : null;
+  if (!Array.isArray(users) || !users.length) return null;
+  const withGithub = users.find((user: any) => userHasGithubIdentity(user));
+  return withGithub || users[0];
 }
 
 export function getAuth0Connections() {
