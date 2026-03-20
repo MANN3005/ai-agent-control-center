@@ -9,6 +9,9 @@ import registerSlackEvents from "./slack-events";
 
 const app = express();
 
+// Render sits behind a proxy/load balancer; trust first hop for real client IP.
+app.set("trust proxy", 1);
+
 app.use(cors({ origin: corsOrigin, credentials: true }));
 
 registerSlackEvents(app);
