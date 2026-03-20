@@ -107,10 +107,12 @@ export default function App() {
     setMe(meRes as Me);
     setAllowedReposText(Array.isArray(allowedRes) ? allowedRes.join("\n") : "");
     setAudit(Array.isArray(auditRes) ? (auditRes as AuditEntry[]) : []);
-    const nextIdentities = Array.isArray(identitiesRes?.identities) ? identitiesRes.identities : [];
+    const nextIdentities: IdentityEntry[] = Array.isArray(identitiesRes?.identities)
+      ? (identitiesRes.identities as IdentityEntry[])
+      : [];
     setIdentities(nextIdentities);
     const isGooglePrimary = nextIdentities.some(
-      (identity) =>
+      (identity: IdentityEntry) =>
         identity?.provider === "google-oauth2" ||
         identity?.provider === "google" ||
         identity?.connection === "google" ||
@@ -352,9 +354,10 @@ export default function App() {
   }, [stepUpRemainingMs]);
 
   useEffect(() => {
-    if (!isAuthenticated || !linkProvider || !user?.sub || !primaryUserId) return;
+    const secondaryUserId = user?.sub;
+    if (!isAuthenticated || !linkProvider || !secondaryUserId || !primaryUserId) return;
     if (linking) return;
-    if (user.sub === primaryUserId) return;
+    if (secondaryUserId === primaryUserId) return;
 
     let active = true;
     setLinking(true);
@@ -362,7 +365,7 @@ export default function App() {
 
     (async () => {
       try {
-        await linkSecondaryToPrimary(user.sub, linkProvider);
+        await linkSecondaryToPrimary(secondaryUserId, linkProvider);
         storeLinkProvider(null);
         if (!active) return;
         await loginWithRedirect({
