@@ -32,6 +32,9 @@ const agentLimiter = rateLimit({
 app.use(generalLimiter);
 app.use("/agent", agentLimiter);
 
+// Keep health checks public so hosting platforms can verify liveness.
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
 const checkJwt = auth({
   issuerBaseURL: `https://${process.env.AUTH0_DOMAIN}`,
   audience: process.env.AUTH0_AUDIENCE,
