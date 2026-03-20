@@ -88,3 +88,26 @@ export async function slackOpenDm(accessToken: string, userId: string) {
 
   return data.channel?.id as string | undefined;
 }
+
+export async function slackGetChannelName(
+  accessToken: string,
+  channelId: string,
+) {
+  const data = await slackRequest<any>(
+    accessToken,
+    `https://slack.com/api/conversations.info?channel=${encodeURIComponent(channelId)}`,
+    { method: "GET" },
+  );
+
+  return data.channel?.name as string | undefined;
+}
+
+export async function slackGetUserEmail(accessToken: string, userId: string) {
+  const data = await slackRequest<any>(
+    accessToken,
+    `https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`,
+    { method: "GET" },
+  );
+
+  return data.user?.profile?.email as string | undefined;
+}

@@ -50,7 +50,7 @@
 .side-nav a.active,
 .side-nav a:hover {
   color: var(--accent-2);
-  background: rgba(19, 114, 209, 0.12);
+  background: rgba(9, 114, 211, 0.12);
 }
 
 .content {
@@ -165,8 +165,8 @@ h3 {
 
 .input:focus {
   outline: none;
-  border-color: rgba(10, 164, 178, 0.6);
-  box-shadow: 0 0 0 3px rgba(10, 164, 178, 0.18);
+  border-color: rgba(9, 114, 211, 0.55);
+  box-shadow: 0 0 0 3px rgba(9, 114, 211, 0.18);
   background: var(--panel);
 }
 
@@ -196,16 +196,16 @@ button {
   font-size: 0.95em;
   font-weight: 600;
   font-family: inherit;
-  background: linear-gradient(120deg, #0aa4b2, #1372d1);
+  background: linear-gradient(135deg, #0972d3, #0f4dc2);
   color: #ffffff;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
-  box-shadow: 0 10px 18px rgba(19, 114, 209, 0.2);
+  box-shadow: 0 10px 20px rgba(15, 77, 194, 0.25);
 }
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 14px 26px rgba(19, 114, 209, 0.25);
+  box-shadow: 0 14px 26px rgba(15, 77, 194, 0.3);
 }
 
 button:disabled {
@@ -220,7 +220,7 @@ button:disabled {
   background: var(--panel-2);
   border-radius: var(--radius-md);
   overflow: hidden;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .table-wrap {
@@ -281,7 +281,7 @@ button:disabled {
   align-items: center;
   padding: 3px 8px;
   border-radius: 999px;
-  background: #eef2f7;
+  background: #edf2f9;
   border: 1px solid var(--line);
   font-size: 0.8rem;
   font-weight: 600;
@@ -289,7 +289,7 @@ button:disabled {
 }
 
 .pill-muted {
-  background: #f5f7fb;
+  background: #f6f8fb;
   color: var(--muted);
 }
 
@@ -304,15 +304,15 @@ button:disabled {
 }
 
 .badge-yes {
-  background: #e7f5ee;
-  color: #0f6b3f;
-  border-color: #bfe9d5;
+  background: #e6f4ea;
+  color: #146c43;
+  border-color: #bfe6cf;
 }
 
 .badge-no {
-  background: #fff1f1;
+  background: #fff1f0;
   color: #b42318;
-  border-color: #fed7d7;
+  border-color: #ffd2cf;
 }
 
 .stat-grid {
@@ -322,7 +322,7 @@ button:disabled {
 }
 
 .stat {
-  background: #fff6ea;
+  background: var(--panel-2);
   border: 2px solid var(--line);
   border-radius: var(--radius-md);
   padding: 14px;
@@ -375,12 +375,12 @@ button:disabled {
 }
 
 .chat-bubble.user {
-  background: #e8fbff;
-  border-color: rgba(10, 164, 178, 0.25);
+  background: #e9f2ff;
+  border-color: rgba(9, 114, 211, 0.25);
 }
 
 .chat-bubble.agent {
-  background: #f8fafc;
+  background: #f5f7fb;
 }
 
 .chat-role {

@@ -492,9 +492,19 @@ export function registerRoutes(app: Express) {
       run.messages.push({ role: "user", text: message });
       const extracted = extractContextFromText(message);
       if (extracted.repo) run.context.repo = extracted.repo;
+      if (extracted.repoCandidate)
+        run.context.repoCandidate = extracted.repoCandidate;
       if (extracted.issueNumber)
         run.context.issueNumber = extracted.issueNumber;
+      if (extracted.issueNumbers)
+        run.context.issueNumbers = extracted.issueNumbers;
       if (extracted.state) run.context.state = extracted.state;
+      if (extracted.title) run.context.title = extracted.title;
+      if (extracted.assignee) run.context.assignee = extracted.assignee;
+      if (extracted.assigneeEmail)
+        run.context.assigneeEmail = extracted.assigneeEmail;
+      if (extracted.channel) run.context.channel = extracted.channel;
+      if (extracted.comment) run.context.comment = extracted.comment;
       if (!run.context.title) {
         const lastAgent = run.messages
           .slice()

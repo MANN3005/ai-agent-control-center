@@ -2,8 +2,12 @@ import crypto from "crypto";
 import { prisma } from "../db";
 import { AGENT_MAX_STEPS } from "../config";
 import { getGroqClient } from "../services/llm";
-import { getGithubAccessToken, getSlackAccessToken } from "../services/auth0";
-import { githubGetIssue, parseRepo } from "../services/github";
+import {
+  getAuth0UserEmail,
+  getGithubAccessToken,
+  getSlackAccessToken,
+} from "../services/auth0";
+import { githubGetIssue, githubListRepos, parseRepo } from "../services/github";
 import {
   buildGithubSummary,
   buildIssuesSummary,
@@ -18,10 +22,72 @@ import {
   ToolName,
 } from "../types";
 import { formatToolListForPrompt, getToolIndex, listAllTools } from "../tools";
+import {
+  slackLookupUserByEmail,
+  slackOpenDm,
+  slackPostMessage,
+} from "../services/slack";
 
 export const AGENT_RUNS = new Map<string, AgentRun>();
 export const ACTIVE_AGENT_RUNS = new Set<string>();
 export const LAST_CONTEXT = new Map<string, Record<string, any>>();
+const TOOL_CALL_HISTORY = new Map<string, number[]>();
+const CIRCUIT_WINDOW_MS = 10_000;
+const CIRCUIT_LIMIT = 5;
+
+function buildDecisionReason(tool: string, input: Record<string, any>) {
+  if (tool === "github_explorer") {
+    const resource = String(input.resource || "repos");
+    const repo = input.repo ? ` in ${input.repo}` : "";
+    return `Explore ${resource}${repo}.`;
+  }
+  if (tool === "manage_issues") {
+    const action = String(input.action || "");
+    const repo = input.repo ? ` in ${input.repo}` : "";
+    if (action === "create") return `Create issue${repo}.`;
+    if (action === "close") return `Close issues${repo}.`;
+    if (action === "reopen") return `Reopen issues${repo}.`;
+    if (action === "comment") return `Comment on issues${repo}.`;
+    return `Manage issues${repo}.`;
+  }
+  if (tool === "slack_notifier") {
+    const action = String(input.action || "post");
+    const channel = input.channel ? ` to #${input.channel}` : "";
+    return `${action === "summary" ? "Post summary" : "Post message"}${channel}.`;
+  }
+  return "Execute tool.";
+}
+
+function isCircuitTripped(userId: string, tool: string) {
+  if (tool !== "manage_issues") return false;
+  const key = `${userId}:${tool}`;
+  const now = Date.now();
+  const history = (TOOL_CALL_HISTORY.get(key) || []).filter(
+    (ts) => now - ts <= CIRCUIT_WINDOW_MS,
+  );
+  history.push(now);
+  TOOL_CALL_HISTORY.set(key, history);
+  return history.length > CIRCUIT_LIMIT;
+}
+
+async function notifyCircuitBreaker(userId: string, tool: string) {
+  try {
+    const email = await getAuth0UserEmail(userId);
+    if (!email) return;
+    const slackToken = await getSlackAccessToken(userId);
+    const slackUser = await slackLookupUserByEmail(slackToken, email);
+    if (!slackUser.id) return;
+    const dmChannel = await slackOpenDm(slackToken, slackUser.id);
+    if (!dmChannel) return;
+    const message =
+      `Circuit breaker tripped for ${tool}. ` +
+      `More than ${CIRCUIT_LIMIT} calls in ${CIRCUIT_WINDOW_MS / 1000}s. ` +
+      "Agent execution has been paused.";
+    await slackPostMessage(slackToken, dmChannel, message);
+  } catch {
+    // Ignore notification failures.
+  }
+}
 
 export function createRunId() {
   return `run_${crypto.randomUUID()}`;
@@ -71,14 +137,13 @@ export async function generateAgentPlan(
     "You solve tasks by planning tool calls. Available tools are listed below. " +
     "You operate within an allow-list; if a repo is not provided, do not assume it. " +
     "If required info is missing, return steps: [] and a short question asking the user. " +
-    "Use input fields: repo, state (open|closed|all), title, body, issueNumber, issueNumbers. " +
+    "Use input fields: resource (repos|issues|prs), repo, state (open|closed|all), action (create|close|reopen|comment), issueNumbers, title, body, comment, assignee, assigneeEmail, channel, text, limit. " +
+    "Use github_explorer for listing repos, issues, or PRs. " +
+    "Use manage_issues for create/close/reopen/comment actions. " +
+    "Use slack_notifier to post or summarize to Slack. " +
+    "If you need to notify an assignee by email, use manage_issues with assigneeEmail and do not add slack_notifier unless the user explicitly asks for a channel post. " +
     "Never assume a tool call succeeded without output. " +
-    "Never use issueNumber 0. Only use close_issue with a valid issueNumber. " +
-    "Only use create_issue if the task explicitly asks to create a new issue and a title is present. " +
-    "If the task asks to close multiple issues, use close_issues with issueNumbers. " +
-    "If the task asks to summarize GitHub and send to Slack, prefer summarize_github_to_slack. " +
-    "Treat natural phrases like update, digest, snapshot, recap, report, or send to Slack as summary intent. " +
-    "If the task asks to create an issue and notify someone on Slack (by email), prefer create_issue_and_notify and do not call list_repos or list_issues. " +
+    "Never use issueNumbers with 0. " +
     "If policy requires CONFIRM or STEP_UP, the system will pause; do not plan around bypassing approvals. " +
     "Summarize your plan with minimal steps. " +
     `\n\nTOOLS:\n${toolList}`;
@@ -114,34 +179,41 @@ export function normalizeAgentSteps(
   toolIndex: Map<string, ToolDefinition>,
 ) {
   const normalized: AgentStep[] = [];
-  const hasIssueNumber = Number.isInteger(Number(context.issueNumber));
-  const hasIssueNumbers =
-    Array.isArray(context.issueNumbers) && context.issueNumbers.length > 0;
-  const wantsSlack = steps.some(
-    (step) =>
-      step.tool === "slack_post_message" ||
-      step.tool === "summarize_github_to_slack",
-  );
-  const hasCreateAndNotify = steps.some(
-    (step) => step.tool === "create_issue_and_notify",
-  );
+  const placeholderValues = new Set([
+    "assignee",
+    "user",
+    "username",
+    "someone",
+    "channel",
+    "slack",
+    "slack-channel",
+    "slack_channel",
+  ]);
+  const hasManagedCreateWithNotify = steps.some((step) => {
+    if (
+      String(step?.tool || "")
+        .trim()
+        .toLowerCase() !== "manage_issues"
+    ) {
+      return false;
+    }
+    const input =
+      step?.input && typeof step.input === "object" ? step.input : {};
+    const action = String((input as any).action || "").trim();
+    return (
+      action === "create" &&
+      Boolean((input as any).assigneeEmail || context.assigneeEmail)
+    );
+  });
 
   for (const step of steps) {
-    const tool = step?.tool as ToolName;
+    const rawTool = String(step?.tool || "")
+      .trim()
+      .toLowerCase();
+    const tool = rawTool as ToolName;
     const toolInfo = toolIndex.get(tool);
     if (!tool || !toolInfo) {
       throw new Error("Agent selected an unsupported tool");
-    }
-
-    if (tool === "list_issues" && hasIssueNumber && wantsSlack) {
-      continue;
-    }
-
-    if (
-      hasCreateAndNotify &&
-      (tool === "list_repos" || tool === "list_issues")
-    ) {
-      continue;
     }
 
     const input =
@@ -149,63 +221,100 @@ export function normalizeAgentSteps(
 
     if (toolInfo.needsRepo) {
       if (!input.repo && context.repo) input.repo = context.repo;
+      if (!input.repo && context.repoCandidate) {
+        input.repo = context.repoCandidate;
+      }
       if (!input.repo) {
         throw new Error("Missing repo for repo-scoped tool");
       }
     }
 
-    if (tool === "close_issue" && !input.issueNumber && context.issueNumber) {
-      input.issueNumber = context.issueNumber;
-    }
-
-    if (tool === "close_issues" && !input.issueNumbers && hasIssueNumbers) {
-      input.issueNumbers = context.issueNumbers;
-    }
-
-    if (tool === "close_issue") {
-      const issueNumber = Number(input.issueNumber);
-      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-        throw new Error("Missing or invalid issueNumber for close_issue");
+    if (tool === "github_explorer") {
+      if (!input.resource) input.resource = "repos";
+      const resource = String(input.resource || "repos");
+      if ((resource === "issues" || resource === "prs") && !input.repo) {
+        if (context.repo) input.repo = context.repo;
+        if (!input.repo && context.repoCandidate) {
+          input.repo = context.repoCandidate;
+        }
+        if (!input.repo) {
+          throw new Error("Missing repo for exploration");
+        }
+      }
+      if (!input.state && context.state) {
+        input.state = context.state;
       }
     }
 
-    if (tool === "close_issues") {
-      const issueNumbers = Array.isArray(input.issueNumbers)
-        ? input.issueNumbers
-            .map((n: any) => Number(n))
-            .filter((n: number) => Number.isInteger(n) && n > 0)
-        : [];
-      if (!issueNumbers.length) {
-        throw new Error("Missing or invalid issueNumbers for close_issues");
+    if (tool === "manage_issues") {
+      const action = String(input.action || "").trim();
+
+      if (action === "create") {
+        if (!input.title && context.title) input.title = context.title;
+        if (!input.body && context.body) input.body = context.body;
+        if (!input.assignee && context.assignee) {
+          input.assignee = context.assignee;
+        }
+        if (!input.assigneeEmail && context.assigneeEmail) {
+          input.assigneeEmail = context.assigneeEmail;
+        }
+        if (
+          typeof input.assignee === "string" &&
+          input.assignee.includes("@")
+        ) {
+          input.assigneeEmail = input.assignee;
+          delete (input as any).assignee;
+        }
+        if (typeof input.assignee === "string") {
+          const normalizedAssignee = input.assignee.trim().toLowerCase();
+          if (placeholderValues.has(normalizedAssignee)) {
+            delete (input as any).assignee;
+          }
+        }
+        if (
+          typeof input.assigneeEmail === "string" &&
+          !input.assigneeEmail.includes("@")
+        ) {
+          delete (input as any).assigneeEmail;
+        }
       }
-      input.issueNumbers = issueNumbers;
-    }
 
-    if (tool === "create_issue") {
-      if (!input.title && context.title) input.title = context.title;
-      if (!input.body && context.body) input.body = context.body;
-    }
+      if (action === "close" || action === "reopen" || action === "comment") {
+        if (!input.issueNumbers && Array.isArray(context.issueNumbers)) {
+          input.issueNumbers = context.issueNumbers;
+        }
+        const issueNumbers = Array.isArray(input.issueNumbers)
+          ? input.issueNumbers
+              .map((n: any) => Number(n))
+              .filter((n: number) => Number.isInteger(n) && n > 0)
+          : [];
+        if (issueNumbers.length) {
+          input.issueNumbers = issueNumbers;
+        }
+      }
 
-    if (tool === "create_issue_and_notify") {
-      if (!input.title && context.title) input.title = context.title;
-      if (!input.body && context.body) input.body = context.body;
-      if (!input.assignee && context.assignee)
-        input.assignee = context.assignee;
-      if (!input.assigneeEmail && context.assigneeEmail) {
-        input.assigneeEmail = context.assigneeEmail;
+      if (action === "comment") {
+        if (!input.comment && context.comment) input.comment = context.comment;
       }
     }
 
-    if (tool === "list_issues" && !input.state && context.state) {
-      input.state = context.state;
-    }
-
-    if (
-      (tool === "slack_post_message" || tool === "summarize_github_to_slack") &&
-      !input.channel &&
-      context.channel
-    ) {
-      input.channel = context.channel;
+    if (tool === "slack_notifier") {
+      if (!input.action) input.action = "post";
+      if (hasManagedCreateWithNotify && !input.channel) {
+        continue;
+      }
+      if (typeof input.channel === "string") {
+        const normalizedChannel = input.channel.trim().toLowerCase();
+        if (placeholderValues.has(normalizedChannel)) {
+          delete (input as any).channel;
+        }
+      }
+      if (!input.channel && context.channel) {
+        input.channel = context.channel;
+      }
+      if (!input.channel) {
+        input.channel = "new-issues";
+      }
     }
 
     normalized.push({ tool, input });
@@ -261,14 +370,27 @@ export function extractContextFromText(text: string) {
   if (uniqueNumbers.length) context.issueNumbers = uniqueNumbers;
   const stateMatch = text.match(/\b(open|closed|all)\b/i);
   if (stateMatch) context.state = stateMatch[1].toLowerCase();
-  const titleMatch = text.match(/titled\s+["“”']?([^"”']+)["“”']?/i);
+  const titleMatch = text.match(/titled\s+["“”'‘’]?([^"”'‘’]+)["“”'‘’]?/i);
+  const titleKeywordMatch = text.match(/title\s+["“”'‘’]([^"”'‘’]+)["“”'‘’]/i);
   if (titleMatch) context.title = titleMatch[1].trim();
+  if (!context.title && titleKeywordMatch) {
+    context.title = titleKeywordMatch[1].trim();
+  }
   const assigneeMatch = text.match(/assign(?:ed)?\s+to\s+([A-Za-z0-9_.-]+)/i);
   if (assigneeMatch) context.assignee = assigneeMatch[1].trim();
   const emailMatch = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   if (emailMatch) context.assigneeEmail = emailMatch[0].trim();
+  const commentMatch = text.match(/comment\s+["“”'‘’]?([^"”'‘’]+)["“”'‘’]?/i);
+  if (commentMatch) context.comment = commentMatch[1].trim();
   const channelMatch = text.match(/#([A-Za-z0-9_-]+)/);
   if (channelMatch) context.channel = channelMatch[1];
+  if (!context.repo && !context.repoCandidate) {
+    const candidateMatch = text.match(/\b(?:on|in)\s+([A-Za-z0-9_.-]+)\b/i);
+    const candidate = candidateMatch?.[1] || "";
+    if (candidate && !candidate.includes("/")) {
+      context.repoCandidate = candidate;
+    }
+  }
   return context;
 }
 
@@ -289,7 +411,7 @@ export function getSmallTalkReply(text: string) {
 
 function isMeaningfulTitle(title: string) {
   const normalized = title.trim().toLowerCase();
-  if (normalized.length < 5) return false;
+  if (normalized.length < 3) return false;
   const banned = ["create issue", "new issue", "issue", "todo", "task"];
   return !banned.includes(normalized);
 }
@@ -299,42 +421,66 @@ export function getMissingInputQuestion(
   context: Record<string, any>,
   toolIndex: Map<string, ToolDefinition>,
 ): string | null {
+  const placeholderValues = new Set([
+    "assignee",
+    "user",
+    "username",
+    "someone",
+    "channel",
+    "slack",
+    "slack-channel",
+    "slack_channel",
+  ]);
+
   for (const step of steps) {
-    const toolInfo = toolIndex.get(step.tool);
+    const toolName = String(step.tool || "").toLowerCase();
+    const toolInfo = toolIndex.get(toolName);
     if (toolInfo?.needsRepo) {
-      if (!step.input?.repo && !context.repo) {
+      if (!step.input?.repo && !context.repo && !context.repoCandidate) {
         return "Which repo should I use? Please share it as owner/repo (it must be in the allow-list).";
       }
     }
-    if (step.tool === "create_issue") {
-      const title = String(step.input?.title || context.title || "").trim();
-      if (!title || !isMeaningfulTitle(title)) {
-        return "What issue title should I use?";
+    if (toolName === "github_explorer") {
+      const resource = String(step.input?.resource || "repos");
+      if ((resource === "issues" || resource === "prs") && !step.input?.repo) {
+        if (!context.repo && !context.repoCandidate) {
+          return "Which repo should I inspect? Provide owner/repo.";
+        }
       }
     }
-    if (step.tool === "close_issue") {
-      const issueNumber = Number(
-        step.input?.issueNumber || context.issueNumber,
-      );
-      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-        return "Which issue number should I close?";
+    if (toolName === "manage_issues") {
+      const action = String(step.input?.action || "");
+      if (action === "create") {
+        const title = String(step.input?.title || context.title || "").trim();
+        if (!title || !isMeaningfulTitle(title)) {
+          return "What issue title should I use?";
+        }
       }
-    }
-    if (step.tool === "close_issues") {
-      const issueNumbers = Array.isArray(step.input?.issueNumbers)
-        ? step.input.issueNumbers
-        : context.issueNumbers;
-      if (!Array.isArray(issueNumbers) || issueNumbers.length === 0) {
-        return "Which issue numbers should I close?";
+      if (action === "close" || action === "reopen" || action === "comment") {
+        const issueNumbers = Array.isArray(step.input?.issueNumbers)
+          ? step.input.issueNumbers
+          : context.issueNumbers;
+        if (!Array.isArray(issueNumbers) || issueNumbers.length === 0) {
+          return "Which issue numbers should I update?";
+        }
+      }
+      if (action === "comment") {
+        const comment = String(
+          step.input?.comment || context.comment || "",
+        ).trim();
+        if (!comment) {
+          return "What comment should I add to those issues?";
+        }
       }
     }
     if (
-      (step.tool === "slack_post_message" ||
-        step.tool === "summarize_github_to_slack") &&
-      !step.input?.channel &&
-      !context.channel
+      toolName === "slack_notifier" &&
+      !context.channel &&
+      (!step.input?.channel ||
+        (typeof step.input.channel === "string" &&
+          placeholderValues.has(step.input.channel.trim().toLowerCase())))
     ) {
-      return "Which Slack channel should I use?";
+      continue;
     }
   }
   return null;
@@ -352,10 +498,11 @@ export async function generateRecoveryAction(
   const toolList = formatToolListForPrompt(tools);
 
   const system =
-    "You help recover from a failed tool call. Only output JSON with keys {action, step, question}. " +
+    "You help recover from a failed tool call. Only output JSON with keys {action, step, question, rationale}. " +
     "Actions: retry, ask_user, abort. " +
     "If retry, include step {tool, input}. " +
     "If ask_user, include a short question. " +
+    "If rationale, keep it short and avoid chain-of-thought. " +
     `Use only these tools:\n${toolList}`;
 
   const user = JSON.stringify({ task, context, failedStep, error });
@@ -378,9 +525,9 @@ export async function generateRecoveryAction(
   }
 
   return parsed as
-    | { action: "retry"; step: AgentStep }
-    | { action: "ask_user"; question: string }
-    | { action: "abort" };
+    | { action: "retry"; step: AgentStep; rationale?: string }
+    | { action: "ask_user"; question: string; rationale?: string }
+    | { action: "abort"; rationale?: string };
 }
 
 export async function generateAgentReply(
@@ -459,7 +606,12 @@ export async function runAgentLoop(runId: string) {
       const step = run.plan[stepIndex];
       const stepRecord = getOrCreateStepRecord(run, stepIndex, step);
 
-      if (step.tool === "slack_post_message" && !step.input?.text) {
+      const slackAction = String(step.input?.action || "post");
+      if (
+        step.tool === "slack_notifier" &&
+        (slackAction === "post" || slackAction === "summary") &&
+        !step.input?.text
+      ) {
         const previous = run.steps[stepIndex - 1];
         const repos = previous?.result?.result?.repos;
         const issues = previous?.result?.result?.issues;
@@ -491,7 +643,7 @@ export async function runAgentLoop(runId: string) {
         }
       }
 
-      trace(run, "action", `Calling ${step.tool}`);
+      trace(run, "action", `Step ${stepIndex + 1}: calling ${step.tool}`);
 
       const response = await executeToolWithPolicy(
         run.userId,
@@ -512,7 +664,7 @@ export async function runAgentLoop(runId: string) {
         stepRecord.reason = responseBody.reason || "Approval required";
         run.pendingStepIndex = stepIndex;
         run.status = "WAITING_APPROVAL";
-        trace(run, "status", "Waiting for approval");
+        trace(run, "status", `Step ${stepIndex + 1}: waiting for approval`);
         run.messages.push({
           role: "agent",
           text: "Approval required. Please confirm in the UI to continue.",
@@ -524,6 +676,21 @@ export async function runAgentLoop(runId: string) {
         stepRecord.status = "ERROR";
         stepRecord.result = responseBody;
         stepRecord.reason = responseBody.reason || "Tool error";
+
+        if (responseBody.reason === "Circuit breaker tripped") {
+          run.status = "ERROR";
+          run.lastError = responseBody.reason || "Circuit breaker tripped";
+          trace(
+            run,
+            "status",
+            `Step ${stepIndex + 1}: circuit breaker tripped`,
+          );
+          run.messages.push({
+            role: "agent",
+            text: "Circuit breaker tripped. The agent paused to prevent runaway actions.",
+          });
+          return;
+        }
 
         if (responseBody.reason === "Repo not allow-listed") {
           run.status = "NEEDS_INPUT";
@@ -545,6 +712,9 @@ export async function runAgentLoop(runId: string) {
             responseBody.reason || "Tool error",
             tools,
           );
+          if (recovery.rationale) {
+            trace(run, "status", `Recovery: ${recovery.rationale}`);
+          }
 
           if (recovery.action === "retry" && recovery.step) {
             try {
@@ -557,7 +727,11 @@ export async function runAgentLoop(runId: string) {
               stepRecord.retries += 1;
               stepRecord.status = "PLANNED";
               stepRecord.reason = "Retrying with corrected step";
-              trace(run, "status", "Retrying after error");
+              trace(
+                run,
+                "status",
+                `Step ${stepIndex + 1}: retrying after error`,
+              );
               continue;
             } catch (err: any) {
               run.status = "ERROR";
@@ -569,7 +743,11 @@ export async function runAgentLoop(runId: string) {
 
           if (recovery.action === "ask_user" && recovery.question) {
             run.status = "NEEDS_INPUT";
-            trace(run, "status", "Waiting for user input");
+            trace(
+              run,
+              "status",
+              `Step ${stepIndex + 1}: waiting for user input`,
+            );
             run.messages.push({ role: "agent", text: recovery.question });
             return;
           }
@@ -577,7 +755,11 @@ export async function runAgentLoop(runId: string) {
 
         run.status = "ERROR";
         run.lastError = responseBody.reason || "Agent step failed";
-        trace(run, "status", run.lastError ?? "Unknown error");
+        trace(
+          run,
+          "status",
+          `Step ${stepIndex + 1}: ${run.lastError ?? "Unknown error"}`,
+        );
         run.messages.push({ role: "agent", text: `Error: ${run.lastError}` });
         return;
       }
@@ -585,6 +767,7 @@ export async function runAgentLoop(runId: string) {
       stepRecord.status = "EXECUTED";
       stepRecord.result = responseBody;
       run.currentStep += 1;
+      trace(run, "status", `Step ${stepIndex + 1}: executed`);
 
       try {
         const reply = await generateAgentReply(run.task, step, responseBody);
@@ -609,6 +792,7 @@ export async function executeToolWithPolicy(
   const toolIndex = getToolIndex(tools);
   const toolInfo = toolIndex.get(tool);
   if (!toolInfo) {
+    const reasoning = buildDecisionReason(tool, input);
     await prisma.auditLog.create({
       data: {
         userId,
@@ -617,12 +801,34 @@ export async function executeToolWithPolicy(
         inputJson: JSON.stringify(input),
         decision: "DENIED",
         reason: "Tool not in registry allow-list",
+        reasoning,
         executed: false,
       },
     });
     return {
       statusCode: 400,
       body: { status: "denied", reason: "Tool not allowed" },
+    };
+  }
+
+  if (isCircuitTripped(userId, tool)) {
+    const reasoning = `Circuit breaker tripped for ${tool}.`;
+    await prisma.auditLog.create({
+      data: {
+        userId,
+        requestId,
+        toolName: tool,
+        inputJson: JSON.stringify(input),
+        decision: "DENIED",
+        reason: "Circuit breaker tripped",
+        reasoning,
+        executed: false,
+      },
+    });
+    await notifyCircuitBreaker(userId, tool);
+    return {
+      statusCode: 429,
+      body: { status: "denied", reason: "Circuit breaker tripped" },
     };
   }
 
@@ -641,10 +847,17 @@ export async function executeToolWithPolicy(
     riskLevel: defaultPolicy.riskLevel as any,
     mode: defaultPolicy.mode as any,
   };
+  const action = String((input as any).action || "");
+  const effectivePolicy = { ...policy };
+  if (tool === "manage_issues" && (action === "close" || action === "reopen")) {
+    effectivePolicy.mode = "STEP_UP" as any;
+    effectivePolicy.riskLevel = "HIGH" as any;
+  }
 
   if (toolInfo.needsRepo) {
     const repo = String((input as any).repo || "");
     if (!repo) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -653,6 +866,7 @@ export async function executeToolWithPolicy(
           inputJson: JSON.stringify(input),
           decision: "DENIED",
           reason: "Missing required input.repo",
+          reasoning,
           executed: false,
         },
       });
@@ -662,18 +876,101 @@ export async function executeToolWithPolicy(
       };
     }
 
-    const allowed = await prisma.allowedResource.findUnique({
+    let resolvedRepo = repo;
+    if (!resolvedRepo.includes("/")) {
+      const accessToken = await getGithubAccessToken(userId);
+      const repos = await githubListRepos(accessToken);
+      const normalized = resolvedRepo.toLowerCase();
+      const matches = repos.filter((r) => {
+        const fullName = (r.fullName || "").toLowerCase();
+        const name = (r.name || "").toLowerCase();
+        return name === normalized || fullName.endsWith(`/${normalized}`);
+      });
+      if (matches.length === 1 && matches[0].fullName) {
+        resolvedRepo = matches[0].fullName;
+        (input as any).repo = resolvedRepo;
+      } else if (matches.length === 0) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: `Repo not found for name: ${resolvedRepo}`,
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: {
+            status: "denied",
+            reason: "Repo not found in your GitHub list. Use owner/repo.",
+          },
+        };
+      } else if (matches.length > 1) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: `Multiple repos matched name: ${resolvedRepo}`,
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: {
+            status: "denied",
+            reason: "Multiple repos matched that name. Use owner/repo.",
+          },
+        };
+      }
+    }
+
+    let allowed = await prisma.allowedResource.findUnique({
       where: {
         userId_provider_resourceType_resourceId: {
           userId,
           provider: "github",
           resourceType: "repo",
-          resourceId: repo,
+          resourceId: resolvedRepo,
         },
       },
     });
 
     if (!allowed) {
+      const allowedRepos = await prisma.allowedResource.findMany({
+        where: { userId, provider: "github", resourceType: "repo" },
+      });
+      const resolvedLower = resolvedRepo.toLowerCase();
+      const resolvedName = resolvedLower.split("/").pop() || resolvedLower;
+      const match = allowedRepos.find((r) => {
+        const candidate = String(r.resourceId || "")
+          .trim()
+          .toLowerCase();
+        if (!candidate) return false;
+        if (candidate === resolvedLower) return true;
+        if (!candidate.includes("/") && candidate === resolvedName) return true;
+        return false;
+      });
+      if (match) {
+        allowed = match as any;
+        resolvedRepo = match.resourceId.includes("/")
+          ? match.resourceId
+          : resolvedRepo;
+        (input as any).repo = resolvedRepo;
+      }
+    }
+
+    if (!allowed) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -681,7 +978,8 @@ export async function executeToolWithPolicy(
           toolName: tool,
           inputJson: JSON.stringify(input),
           decision: "DENIED",
-          reason: `Repo not allow-listed: ${repo}`,
+          reason: `Repo not allow-listed: ${resolvedRepo}`,
+          reasoning,
           executed: false,
         },
       });
@@ -692,7 +990,8 @@ export async function executeToolWithPolicy(
     }
   }
 
-  if (policy.mode === "CONFIRM" && !approval.confirmed) {
+  if (effectivePolicy.mode === "CONFIRM" && !approval.confirmed) {
+    const reasoning = buildDecisionReason(tool, input);
     await prisma.auditLog.create({
       data: {
         userId,
@@ -701,6 +1000,7 @@ export async function executeToolWithPolicy(
         inputJson: JSON.stringify(input),
         decision: "CONFIRM_REQUIRED",
         reason: "Policy requires confirmation",
+        reasoning,
         executed: false,
       },
     });
@@ -714,7 +1014,7 @@ export async function executeToolWithPolicy(
     };
   }
 
-  if (policy.mode === "STEP_UP") {
+  if (effectivePolicy.mode === "STEP_UP") {
     let stepUpId = approval.stepUpId;
     if (!stepUpId) {
       const now = new Date();
@@ -726,6 +1026,7 @@ export async function executeToolWithPolicy(
     }
 
     if (!stepUpId) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -734,6 +1035,7 @@ export async function executeToolWithPolicy(
           inputJson: JSON.stringify(input),
           decision: "STEP_UP_REQUIRED",
           reason: "Policy requires step-up",
+          reasoning,
           executed: false,
         },
       });
@@ -751,6 +1053,7 @@ export async function executeToolWithPolicy(
       session && session.userId === userId && session.expiresAt > now;
 
     if (!valid) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -759,6 +1062,7 @@ export async function executeToolWithPolicy(
           inputJson: JSON.stringify(input),
           decision: "STEP_UP_REQUIRED",
           reason: "Invalid or expired step-up session",
+          reasoning,
           executed: false,
         },
       });
@@ -772,6 +1076,7 @@ export async function executeToolWithPolicy(
     }
 
     if (!approval.confirmed) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -780,6 +1085,7 @@ export async function executeToolWithPolicy(
           inputJson: JSON.stringify(input),
           decision: "CONFIRM_REQUIRED",
           reason: "High risk tool requires confirmation",
+          reasoning,
           executed: false,
         },
       });
@@ -794,11 +1100,209 @@ export async function executeToolWithPolicy(
     }
   }
 
+  if (tool === "github_explorer") {
+    const resource = String((input as any).resource || "repos");
+    if (!"repos|issues|prs".split("|").includes(resource)) {
+      const reasoning = buildDecisionReason(tool, input);
+      await prisma.auditLog.create({
+        data: {
+          userId,
+          requestId,
+          toolName: tool,
+          inputJson: JSON.stringify(input),
+          decision: "DENIED",
+          reason: "Invalid input.resource; expected repos, issues, or prs",
+          reasoning,
+          executed: false,
+        },
+      });
+      return {
+        statusCode: 400,
+        body: { status: "denied", reason: "Invalid resource" },
+      };
+    }
+
+    if (resource === "issues" || resource === "prs") {
+      let repo = String((input as any).repo || "");
+      if (!repo) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: "Missing required input.repo",
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: { status: "denied", reason: "Missing repo" },
+        };
+      }
+
+      if (!repo.includes("/")) {
+        const accessToken = await getGithubAccessToken(userId);
+        const repos = await githubListRepos(accessToken);
+        const normalized = repo.toLowerCase();
+        const matches = repos.filter((r) => {
+          const fullName = (r.fullName || "").toLowerCase();
+          const name = (r.name || "").toLowerCase();
+          return name === normalized || fullName.endsWith(`/${normalized}`);
+        });
+        if (matches.length === 1 && matches[0].fullName) {
+          repo = matches[0].fullName;
+          (input as any).repo = repo;
+        } else if (matches.length === 0) {
+          const reasoning = buildDecisionReason(tool, input);
+          await prisma.auditLog.create({
+            data: {
+              userId,
+              requestId,
+              toolName: tool,
+              inputJson: JSON.stringify(input),
+              decision: "DENIED",
+              reason: `Repo not found for name: ${repo}`,
+              reasoning,
+              executed: false,
+            },
+          });
+          return {
+            statusCode: 400,
+            body: {
+              status: "denied",
+              reason: "Repo not found in your GitHub list. Use owner/repo.",
+            },
+          };
+        } else if (matches.length > 1) {
+          const reasoning = buildDecisionReason(tool, input);
+          await prisma.auditLog.create({
+            data: {
+              userId,
+              requestId,
+              toolName: tool,
+              inputJson: JSON.stringify(input),
+              decision: "DENIED",
+              reason: `Multiple repos matched name: ${repo}`,
+              reasoning,
+              executed: false,
+            },
+          });
+          return {
+            statusCode: 400,
+            body: {
+              status: "denied",
+              reason: "Multiple repos matched that name. Use owner/repo.",
+            },
+          };
+        }
+      }
+
+      let allowed = await prisma.allowedResource.findUnique({
+        where: {
+          userId_provider_resourceType_resourceId: {
+            userId,
+            provider: "github",
+            resourceType: "repo",
+            resourceId: repo,
+          },
+        },
+      });
+      if (!allowed) {
+        const allowedRepos = await prisma.allowedResource.findMany({
+          where: { userId, provider: "github", resourceType: "repo" },
+        });
+        const repoLower = repo.toLowerCase();
+        const repoName = repoLower.split("/").pop() || repoLower;
+        const match = allowedRepos.find((r) => {
+          const candidate = String(r.resourceId || "")
+            .trim()
+            .toLowerCase();
+          if (!candidate) return false;
+          if (candidate === repoLower) return true;
+          if (!candidate.includes("/") && candidate === repoName) return true;
+          return false;
+        });
+        if (match) {
+          allowed = match as any;
+          repo = match.resourceId.includes("/") ? match.resourceId : repo;
+          (input as any).repo = repo;
+        }
+      }
+      if (!allowed) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: `Repo not allow-listed: ${repo}`,
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 403,
+          body: { status: "denied", reason: "Repo not allow-listed" },
+        };
+      }
+
+      try {
+        parseRepo(repo);
+      } catch (err: any) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: err?.message || "Invalid repo format",
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: { status: "denied", reason: err?.message },
+        };
+      }
+    }
+
+    const state = String((input as any).state || "open");
+    if (!"open|closed|all".split("|").includes(state)) {
+      const reasoning = buildDecisionReason(tool, input);
+      await prisma.auditLog.create({
+        data: {
+          userId,
+          requestId,
+          toolName: tool,
+          inputJson: JSON.stringify(input),
+          decision: "DENIED",
+          reason: "Invalid input.state; expected open, closed, or all",
+          reasoning,
+          executed: false,
+        },
+      });
+      return {
+        statusCode: 400,
+        body: { status: "denied", reason: "Invalid state" },
+      };
+    }
+  }
+
   if (toolInfo.needsRepo) {
     const repo = String((input as any).repo || "");
     try {
       parseRepo(repo);
     } catch (err: any) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -807,6 +1311,7 @@ export async function executeToolWithPolicy(
           inputJson: JSON.stringify(input),
           decision: "DENIED",
           reason: err?.message || "Invalid repo format",
+          reasoning,
           executed: false,
         },
       });
@@ -817,9 +1322,10 @@ export async function executeToolWithPolicy(
     }
   }
 
-  if (tool === "create_issue") {
-    const title = String((input as any).title || "");
-    if (!title) {
+  if (tool === "manage_issues") {
+    const actionValue = String((input as any).action || "");
+    if (!"create|close|reopen|comment".split("|").includes(actionValue)) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -827,20 +1333,100 @@ export async function executeToolWithPolicy(
           toolName: tool,
           inputJson: JSON.stringify(input),
           decision: "DENIED",
-          reason: "Missing required input.title",
+          reason:
+            "Invalid input.action; expected create, close, reopen, or comment",
+          reasoning,
           executed: false,
         },
       });
       return {
         statusCode: 400,
-        body: { status: "denied", reason: "Missing title" },
+        body: { status: "denied", reason: "Invalid action" },
       };
+    }
+
+    if (actionValue === "create") {
+      const title = String((input as any).title || "");
+      if (!title) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: "Missing required input.title",
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: { status: "denied", reason: "Missing title" },
+        };
+      }
+    }
+
+    if (
+      actionValue === "close" ||
+      actionValue === "reopen" ||
+      actionValue === "comment"
+    ) {
+      const issueNumbers = Array.isArray((input as any).issueNumbers)
+        ? (input as any).issueNumbers
+            .map((n: any) => Number(n))
+            .filter((n: number) => Number.isInteger(n) && n > 0)
+        : [];
+      if (!issueNumbers.length) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: "Missing or invalid input.issueNumbers",
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: { status: "denied", reason: "Invalid issueNumbers" },
+        };
+      }
+    }
+
+    if (actionValue === "comment") {
+      const comment = String((input as any).comment || "");
+      if (!comment) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: "Missing required input.comment",
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: { status: "denied", reason: "Missing comment" },
+        };
+      }
     }
   }
 
-  if (tool === "close_issue") {
-    const issueNumber = Number((input as any).issueNumber);
-    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+  if (tool === "slack_notifier") {
+    const actionValue = String((input as any).action || "post");
+    if (!"post|summary".split("|").includes(actionValue)) {
+      const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
         data: {
           userId,
@@ -848,34 +1434,14 @@ export async function executeToolWithPolicy(
           toolName: tool,
           inputJson: JSON.stringify(input),
           decision: "DENIED",
-          reason: "Missing or invalid input.issueNumber",
+          reason: "Invalid input.action; expected post or summary",
+          reasoning,
           executed: false,
         },
       });
       return {
         statusCode: 400,
-        body: { status: "denied", reason: "Invalid issueNumber" },
-      };
-    }
-  }
-
-  if (tool === "list_issues") {
-    const state = String((input as any).state || "open");
-    if (!"open|closed|all".split("|").includes(state)) {
-      await prisma.auditLog.create({
-        data: {
-          userId,
-          requestId,
-          toolName: tool,
-          inputJson: JSON.stringify(input),
-          decision: "DENIED",
-          reason: "Invalid input.state; expected open, closed, or all",
-          executed: false,
-        },
-      });
-      return {
-        statusCode: 400,
-        body: { status: "denied", reason: "Invalid state" },
+        body: { status: "denied", reason: "Invalid action" },
       };
     }
   }
@@ -897,6 +1463,7 @@ export async function executeToolWithPolicy(
         inputJson: JSON.stringify(input),
         decision: "ALLOWED",
         reason: "Executed",
+        reasoning: buildDecisionReason(tool, input),
         executed: true,
         resultJson: JSON.stringify(result),
       },
@@ -912,6 +1479,7 @@ export async function executeToolWithPolicy(
         inputJson: JSON.stringify(input),
         decision: "ERROR",
         reason: err?.message || "Execution failed",
+        reasoning: buildDecisionReason(tool, input),
         executed: false,
       },
     });
@@ -925,7 +1493,14 @@ export async function executeToolWithPolicy(
 
 export async function applySlackAutoFill(run: AgentRun, stepIndex: number) {
   const step = run.plan[stepIndex];
-  if (step.tool !== "slack_post_message" || step.input?.text) return;
+  const slackAction = String(step.input?.action || "post");
+  if (
+    step.tool !== "slack_notifier" ||
+    (slackAction !== "post" && slackAction !== "summary") ||
+    step.input?.text
+  ) {
+    return;
+  }
   const previous = run.steps[stepIndex - 1];
   const repos = previous?.result?.result?.repos;
   const issues = previous?.result?.result?.issues;

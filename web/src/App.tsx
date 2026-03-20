@@ -33,14 +33,9 @@ import type {
 import "./App.css";
 
 const DEFAULTS: Policy[] = [
-  { toolName: "list_repos", riskLevel: "LOW", mode: "AUTO" },
-  { toolName: "list_issues", riskLevel: "LOW", mode: "AUTO" },
-  { toolName: "create_issue", riskLevel: "MEDIUM", mode: "CONFIRM" },
-  { toolName: "close_issue", riskLevel: "HIGH", mode: "STEP_UP" },
-  { toolName: "close_issues", riskLevel: "HIGH", mode: "STEP_UP" },
-  { toolName: "slack_post_message", riskLevel: "HIGH", mode: "STEP_UP" },
-  { toolName: "summarize_github_to_slack", riskLevel: "HIGH", mode: "STEP_UP" },
-  { toolName: "create_issue_and_notify", riskLevel: "HIGH", mode: "STEP_UP" },
+  { toolName: "github_explorer", riskLevel: "LOW", mode: "AUTO" },
+  { toolName: "manage_issues", riskLevel: "MEDIUM", mode: "CONFIRM" },
+  { toolName: "slack_notifier", riskLevel: "MEDIUM", mode: "CONFIRM" },
 ];
 
 const PRIMARY_USER_KEY = "cc_primary_user_id";
@@ -245,6 +240,29 @@ export default function App() {
     await refresh();
   }
 
+  async function addAllowListedRepo(repo: string) {
+    const accessToken = await getApiToken();
+    const current = allowedReposText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const next = Array.from(new Set([...current, repo]));
+    await putAllowedRepos(accessToken, next);
+    await refresh();
+
+    if (agentRunId && agentRun?.status === "NEEDS_INPUT") {
+      const r = await continueAgent(accessToken, {
+        runId: agentRunId,
+        message: repo,
+      });
+      if (r?.run) {
+        const run = r.run as AgentRun;
+        setAgentRun(run);
+        setAgentMessages(run.messages || []);
+      }
+    }
+  }
+
   async function savePolicies() {
     const accessToken = await getApiToken();
     await putPolicies(accessToken, policies);
@@ -444,10 +462,12 @@ export default function App() {
       agentMessages={agentMessages}
       agentSteps={agentSteps}
       agentTrace={agentTrace as AgentTrace[]}
+      pendingApprovalStep={pendingApproval}
       pendingApprovalStatus={pendingApprovalStatus}
       approvalError={approvalError}
       onConfirm={() => approvePendingStep(false)}
       onApprove={() => approvePendingStep(true)}
+      onAllowListRepo={addAllowListedRepo}
       stepUpInfo={{
         active: Boolean(stepUpId),
         expiresAt: stepUpExpiresAt,

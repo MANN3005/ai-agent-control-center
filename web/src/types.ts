@@ -17,6 +17,7 @@ export type AuditEntry = {
   decision: string;
   executed: boolean;
   reason?: string | null;
+  reasoning?: string | null;
 };
 
 export type AgentMessage = {
@@ -44,6 +45,7 @@ export type AgentStep = {
   tool: string;
   status: string;
   reason?: string | null;
+  input?: Record<string, unknown>;
   result?: AgentStepResult;
 };
 
@@ -66,6 +68,15 @@ export type Issue = {
   htmlUrl: string;
 };
 
+export type Pull = {
+  id: string | number;
+  number: number;
+  title: string;
+  state: string;
+  draft?: boolean;
+  htmlUrl: string;
+};
+
 export type Repo = {
   id: string | number;
   fullName?: string;
@@ -79,6 +90,7 @@ export type Repo = {
 export type AgentPayload = {
   issues?: Issue[];
   repos?: Repo[];
+  pulls?: Pull[];
   issue?: Issue;
 };
 

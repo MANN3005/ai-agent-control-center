@@ -15,8 +15,8 @@ export default function AllowListSection({
     <div className="section-card">
       <h2>Allowed Repos (Allow-list)</h2>
       <p>
-        Enter one repo per line (format: <code>owner/repo</code>). Repo-scoped tools will be denied unless
-        allow-listed.
+        Enter one repo per line (prefer <code>owner/repo</code>; repo name alone is allowed if unique). Repo-scoped
+        tools will be denied unless allow-listed.
       </p>
       <textarea
         value={allowedReposText}

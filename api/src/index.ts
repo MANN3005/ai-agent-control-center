@@ -5,10 +5,14 @@ import rateLimit from "express-rate-limit";
 import { auth } from "express-oauth2-jwt-bearer";
 import { corsOrigin } from "./config";
 import { registerRoutes } from "./routes";
+import registerSlackEvents from "./slack-events";
 
 const app = express();
 
 app.use(cors({ origin: corsOrigin, credentials: true }));
+
+registerSlackEvents(app);
+
 app.use(express.json());
 
 const generalLimiter = rateLimit({

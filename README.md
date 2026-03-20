@@ -21,6 +21,9 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - **Allow-listing**: repo-scoped tools can only touch approved repos.
 - **Agent orchestration**: LLM plans tool calls; humans approve when needed.
 - **Slack and GitHub workflows**: real automation that stays safe.
+- **Slack claims**: volunteers can claim issues in `#new-issues` with natural phrases.
+- **Traceability**: step-by-step trace viewer and structured reasoning in audit logs.
+- **Resilience**: retry-with-reflection and circuit breaker protection.
 - **Audit trails**: immutable records of all decisions and executions.
 
 ## How it works
@@ -32,14 +35,24 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 6) Everything is recorded in the audit log.
 
 ## Tool catalog
-- `list_repos` - List GitHub repositories for the connected user.
-- `list_issues` - List GitHub issues for a repo.
-- `create_issue` - Create a GitHub issue.
-- `close_issue` - Close a GitHub issue.
-- `close_issues` - Close multiple GitHub issues.
-- `create_issue_and_notify` - Create an issue and DM the assignee on Slack.
-- `slack_post_message` - Post a message to Slack.
-- `summarize_github_to_slack` - Summarize repos and post to Slack.
+- `github_explorer` - List GitHub repos, issues, or PRs.
+- `manage_issues` - Create, close, reopen, or comment on GitHub issues.
+- `slack_notifier` - Post a message or summary to Slack.
+
+## Tool actions
+- `github_explorer.resource`: `repos`, `issues`, `prs`
+- `manage_issues.action`: `create`, `close`, `reopen`, `comment`
+- `slack_notifier.action`: `post`, `summary`
+
+## Slack issue claims (new-issues)
+- When an unassigned issue is created, it posts to `#new-issues` with a prompt.
+- Team members can reply **in the thread** with natural phrases like:
+	- "I’ll take it", "assign to me", "I can work on this", "I’ll handle this"
+	- Optional GitHub handle: "assign to me @githubid"
+- The system adds a GitHub comment and assigns the issue when a GitHub handle is provided.
+- If no GitHub handle is provided, it attempts to match by Slack user email; if no match, it only comments.
+
+Note: Auth0 identity linkage is the source of truth. When a user links Slack + GitHub in Auth0, the app uses that linkage to map Slack users to GitHub identities without requiring `@githubid`.
 
 ## Hackathon judging alignment
 
@@ -48,6 +61,14 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - Risk-based policy gates every tool.
 - Step-up sessions protect high-stakes actions.
 - Token Vault ensures credentials never sit in the app.
+
+### Observability
+- Trace viewer shows step-level execution (plan → call → results).
+- Audit log includes structured decision reasoning for each action.
+
+### Resilience
+- Retry-with-reflection to recover from common errors (bad repo names, missing inputs).
+- Circuit breaker freezes runaway actions and notifies the owner on Slack.
 
 ### User control
 - Policies are visible and editable in the UI.
@@ -82,6 +103,7 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - GET /me
 - GET /debug/identities
 - POST /auth/link
+- POST /auth/unlink
 - GET /policies
 - PUT /policies
 - GET /allowed-resources
@@ -92,6 +114,7 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - POST /agent/continue
 - GET /agent/runs/:id
 - GET /audit
+- POST /slack/events
 
 ## UI screens
 - Home: overview stats
@@ -135,13 +158,29 @@ npm run dev
 
 Open the web app at http://localhost:5173
 
+## Slack Events setup
+1) Create a Slack app and add a Bot User.
+2) Enable Event Subscriptions and set the Request URL to:
+	`https://<your-ngrok-id>.ngrok-free.dev/slack/events`
+3) Subscribe to Bot Events: `message.channels`.
+4) OAuth scopes: `channels:history`, `channels:read`, `chat:write`, `users:read`, `users:read.email`.
+5) Install/Reinstall the app and invite the bot to `#new-issues`.
+
+Note: for local development, keep ngrok running while testing Slack events. If ngrok stops, Slack can’t reach your API.
+
+Required env vars:
+- `SLACK_SIGNING_SECRET`
+- `SLACK_BOT_TOKEN`
+- `SLACK_EVENTS_DEBUG` (optional)
+
 ## Demo flow
 1) Login and connect GitHub/Slack.
 2) Allow-list a repo.
-3) Set create_issue to CONFIRM and close_issue to STEP_UP.
-4) Run a task like: "List open issues and create a summary issue."
+3) Set `manage_issues` to CONFIRM and `slack_notifier` to STEP_UP.
+4) Run a tool chain like: "Find the open issues in the backend repo, summarize them, and post that summary to Slack."
 5) Approve actions when prompted.
 6) Review the audit log.
+7) Create an unassigned issue and reply in `#new-issues` with "I’ll take it @yourgithubid".
 
 ## Roadmap
 - More connectors (Jira, Linear, ServiceNow).

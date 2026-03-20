@@ -2,10 +2,13 @@ import { ToolDefinition } from "./types";
 import { getGithubAccessToken, getSlackAccessToken } from "./services/auth0";
 import {
   githubCloseIssue,
+  githubCommentIssue,
   githubCreateIssue,
   githubCreateIssueWithAssignee,
   githubListIssues,
+  githubListPulls,
   githubListRepos,
+  githubReopenIssue,
   parseRepo,
 } from "./services/github";
 import {
@@ -13,273 +16,293 @@ import {
   slackOpenDm,
   slackPostMessage,
 } from "./services/slack";
-import { buildGithubSummary } from "./services/summaries";
+import { recordAnnouncement } from "./slack-intake";
 
 export function listLocalTools(): ToolDefinition[] {
   return [
     {
-      name: "list_repos",
+      name: "github_explorer",
       needsRepo: false,
       defaultRisk: "LOW",
       defaultMode: "AUTO",
-      description: "List GitHub repositories for the connected user.",
-      inputSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
-      handler: async (userId) => {
-        const accessToken = await getGithubAccessToken(userId);
-        const repos = await githubListRepos(accessToken);
-        return { repos };
-      },
-    },
-    {
-      name: "list_issues",
-      needsRepo: true,
-      defaultRisk: "LOW",
-      defaultMode: "AUTO",
-      description: "List GitHub issues for a repo.",
+      description: "Explore GitHub resources (repos, issues, or PRs).",
       inputSchema: {
         type: "object",
         properties: {
+          resource: { type: "string", enum: ["repos", "issues", "prs"] },
           repo: { type: "string" },
           state: { type: "string", enum: ["open", "closed", "all"] },
         },
-        required: ["repo"],
+        required: ["resource"],
+        additionalProperties: false,
       },
       handler: async (userId, input) => {
         const accessToken = await getGithubAccessToken(userId);
+        const resource = String(input.resource || "repos");
+        if (resource === "repos") {
+          const repos = await githubListRepos(accessToken);
+          return { repos };
+        }
+
         const repo = String(input.repo || "");
         const { owner, name } = parseRepo(repo);
         const state = String(input.state || "open");
+        if (resource === "prs") {
+          const pulls = await githubListPulls(accessToken, owner, name, state);
+          return { pulls };
+        }
+
         const issues = await githubListIssues(accessToken, owner, name, state);
         return { issues };
       },
     },
     {
-      name: "create_issue",
+      name: "manage_issues",
       needsRepo: true,
       defaultRisk: "MEDIUM",
       defaultMode: "CONFIRM",
-      description: "Create a GitHub issue.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          repo: { type: "string" },
-          title: { type: "string" },
-          body: { type: "string" },
-        },
-        required: ["repo", "title"],
-      },
-      handler: async (userId, input) => {
-        const accessToken = await getGithubAccessToken(userId);
-        const repo = String(input.repo || "");
-        const { owner, name } = parseRepo(repo);
-        const title = String(input.title || "");
-        const body = input.body ? String(input.body) : undefined;
-        const issue = await githubCreateIssue(
-          accessToken,
-          owner,
-          name,
-          title,
-          body,
-        );
-        return { issue };
-      },
-    },
-    {
-      name: "create_issue_and_notify",
-      needsRepo: true,
-      defaultRisk: "HIGH",
-      defaultMode: "STEP_UP",
       description:
-        "Create a GitHub issue and DM the assignee on Slack (by email).",
+        "Create, close, reopen, or comment on GitHub issues (optionally notify via Slack).",
       inputSchema: {
         type: "object",
         properties: {
+          action: {
+            type: "string",
+            enum: ["create", "close", "reopen", "comment"],
+          },
           repo: { type: "string" },
           title: { type: "string" },
           body: { type: "string" },
+          comment: { type: "string" },
+          issueNumbers: { type: "array", items: { type: "number" } },
           assignee: { type: "string" },
           assigneeEmail: { type: "string" },
         },
-        required: ["repo", "title", "assignee", "assigneeEmail"],
+        required: ["action", "repo"],
         additionalProperties: false,
       },
       handler: async (userId, input) => {
+        const action = String(input.action || "");
         const repo = String(input.repo || "");
         const { owner, name } = parseRepo(repo);
-        const title = String(input.title || "");
-        const body = input.body ? String(input.body) : undefined;
-        const assignee = String(input.assignee || "");
-        const assigneeEmail = String(input.assigneeEmail || "");
-        if (!assignee) throw new Error("Missing assignee");
-        if (!assigneeEmail) throw new Error("Missing assigneeEmail");
 
-        const githubToken = await getGithubAccessToken(userId);
-        const issue = await githubCreateIssueWithAssignee(
-          githubToken,
-          owner,
-          name,
-          title,
-          body,
-          assignee,
-        );
+        if (action === "create") {
+          const title = String(input.title || "");
+          const body = input.body ? String(input.body) : undefined;
+          let assignee = input.assignee ? String(input.assignee) : undefined;
+          let assigneeEmail = input.assigneeEmail
+            ? String(input.assigneeEmail)
+            : undefined;
+          const fallbackChannel = "new-issues";
+          if (assignee && assignee.includes("@") && !assigneeEmail) {
+            assigneeEmail = assignee;
+            assignee = undefined;
+          }
 
-        const slackToken = await getSlackAccessToken(userId);
-        const slackUser = await slackLookupUserByEmail(
-          slackToken,
-          assigneeEmail,
-        );
-        if (!slackUser.id) throw new Error("Slack user not found for email");
-        const dmChannel = await slackOpenDm(slackToken, slackUser.id);
-        if (!dmChannel) throw new Error("Failed to open Slack DM channel");
+          const githubToken = await getGithubAccessToken(userId);
+          const issue = assignee
+            ? await githubCreateIssueWithAssignee(
+                githubToken,
+                owner,
+                name,
+                title,
+                body,
+                assignee,
+              )
+            : await githubCreateIssue(githubToken, owner, name, title, body);
 
-        const messageText = `You have been assigned a GitHub issue: #${issue.number} ${issue.title}\n${issue.html_url}`;
-        const dmResult = await slackPostMessage(
-          slackToken,
-          dmChannel,
-          messageText,
-        );
+          const intro = assignee
+            ? "You have been assigned a GitHub issue:"
+            : "A new GitHub issue was created:";
+          const detailLines = [
+            intro,
+            `Repo: ${owner}/${name}`,
+            `Title: ${issue.title}`,
+            `Number: #${issue.number}`,
+            `Link: ${issue.htmlUrl}`,
+          ];
+          const bodyLine = body ? `Body: ${body.slice(0, 500)}` : null;
+          if (bodyLine) detailLines.push(bodyLine);
+          const messageText = detailLines.join("\n");
+          const channelMessageText = `If anyone is free, please look into this issue.\n${messageText}`;
 
-        return {
-          issue: {
-            id: issue.id,
-            number: issue.number,
-            title: issue.title,
-            state: issue.state,
-            htmlUrl: issue.html_url,
-            assignee,
-          },
-          slack: {
-            ok: dmResult.ok,
-            channel: dmResult.channel,
-          },
-        };
-      },
-    },
-    {
-      name: "close_issue",
-      needsRepo: true,
-      defaultRisk: "HIGH",
-      defaultMode: "STEP_UP",
-      description: "Close a GitHub issue.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          repo: { type: "string" },
-          issueNumber: { type: "number" },
-        },
-        required: ["repo", "issueNumber"],
-      },
-      handler: async (userId, input) => {
-        const accessToken = await getGithubAccessToken(userId);
-        const repo = String(input.repo || "");
-        const { owner, name } = parseRepo(repo);
-        const issueNumber = Number(input.issueNumber);
-        const issue = await githubCloseIssue(
-          accessToken,
-          owner,
-          name,
-          issueNumber,
-        );
-        return { issue };
-      },
-    },
-    {
-      name: "close_issues",
-      needsRepo: true,
-      defaultRisk: "HIGH",
-      defaultMode: "STEP_UP",
-      description: "Close multiple GitHub issues.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          repo: { type: "string" },
-          issueNumbers: { type: "array", items: { type: "number" } },
-        },
-        required: ["repo", "issueNumbers"],
-        additionalProperties: false,
-      },
-      handler: async (userId, input) => {
-        const accessToken = await getGithubAccessToken(userId);
-        const repo = String(input.repo || "");
-        const { owner, name } = parseRepo(repo);
-        const issueNumbers = Array.isArray((input as any).issueNumbers)
-          ? (input as any).issueNumbers
-              .map((n: any) => Number(n))
-              .filter((n: number) => Number.isInteger(n) && n > 0)
-          : [];
-        if (!issueNumbers.length) {
-          throw new Error("Missing or invalid issueNumbers for close_issues");
+          if (assigneeEmail) {
+            const slackToken = await getSlackAccessToken(userId);
+            const slackUser = await slackLookupUserByEmail(
+              slackToken,
+              assigneeEmail,
+            );
+            if (!slackUser.id) {
+              throw new Error("Slack user not found for email");
+            }
+            const dmChannel = await slackOpenDm(slackToken, slackUser.id);
+            if (!dmChannel) throw new Error("Failed to open Slack DM channel");
+            const dmResult = await slackPostMessage(
+              slackToken,
+              dmChannel,
+              messageText,
+            );
+
+            return {
+              issue: {
+                id: issue.id,
+                number: issue.number,
+                title: issue.title,
+                state: issue.state,
+                htmlUrl: issue.htmlUrl,
+                assignee: assignee ?? null,
+              },
+              slack: {
+                ok: dmResult.ok,
+                channel: dmResult.channel,
+                mode: "dm",
+              },
+            };
+          }
+
+          if (fallbackChannel) {
+            const slackToken = await getSlackAccessToken(userId);
+            const channelResult = await slackPostMessage(
+              slackToken,
+              fallbackChannel,
+              channelMessageText,
+            );
+            recordAnnouncement({
+              channelId: channelResult.channel,
+              threadTs: channelResult.ts,
+              userId,
+              owner,
+              repo: name,
+              issueNumber: issue.number,
+            });
+            return {
+              issue: {
+                id: issue.id,
+                number: issue.number,
+                title: issue.title,
+                state: issue.state,
+                htmlUrl: issue.htmlUrl,
+                assignee: assignee ?? null,
+              },
+              slack: {
+                ok: channelResult.ok,
+                channel: channelResult.channel,
+                mode: "channel",
+              },
+            };
+          }
+
+          return {
+            issue: {
+              id: issue.id,
+              number: issue.number,
+              title: issue.title,
+              state: issue.state,
+              htmlUrl: issue.htmlUrl,
+              assignee: assignee ?? null,
+            },
+          };
         }
 
-        const results = await Promise.all(
-          issueNumbers.map((issueNumber: number) =>
-            githubCloseIssue(accessToken, owner, name, issueNumber),
-          ),
-        );
+        if (action === "close") {
+          const issueNumbers = Array.isArray((input as any).issueNumbers)
+            ? (input as any).issueNumbers
+                .map((n: any) => Number(n))
+                .filter((n: number) => Number.isInteger(n) && n > 0)
+            : [];
+          if (!issueNumbers.length) {
+            throw new Error("Missing or invalid issueNumbers for close");
+          }
+          const githubToken = await getGithubAccessToken(userId);
+          const results = await Promise.all(
+            issueNumbers.map((issueNumber: number) =>
+              githubCloseIssue(githubToken, owner, name, issueNumber),
+            ),
+          );
+          return { issues: results };
+        }
 
-        return { issues: results };
+        if (action === "reopen") {
+          const issueNumbers = Array.isArray((input as any).issueNumbers)
+            ? (input as any).issueNumbers
+                .map((n: any) => Number(n))
+                .filter((n: number) => Number.isInteger(n) && n > 0)
+            : [];
+          if (!issueNumbers.length) {
+            throw new Error("Missing or invalid issueNumbers for reopen");
+          }
+          const githubToken = await getGithubAccessToken(userId);
+          const results = await Promise.all(
+            issueNumbers.map((issueNumber: number) =>
+              githubReopenIssue(githubToken, owner, name, issueNumber),
+            ),
+          );
+          return { issues: results };
+        }
+
+        if (action === "comment") {
+          const issueNumbers = Array.isArray((input as any).issueNumbers)
+            ? (input as any).issueNumbers
+                .map((n: any) => Number(n))
+                .filter((n: number) => Number.isInteger(n) && n > 0)
+            : [];
+          if (!issueNumbers.length) {
+            throw new Error("Missing or invalid issueNumbers for comment");
+          }
+          const comment = String(input.comment || "");
+          if (!comment) {
+            throw new Error("Missing comment text");
+          }
+          const githubToken = await getGithubAccessToken(userId);
+          const results = await Promise.all(
+            issueNumbers.map((issueNumber: number) =>
+              githubCommentIssue(
+                githubToken,
+                owner,
+                name,
+                issueNumber,
+                comment,
+              ),
+            ),
+          );
+          return { comments: results };
+        }
+
+        throw new Error("Unsupported manage_issues action");
       },
     },
     {
-      name: "slack_post_message",
+      name: "slack_notifier",
       needsRepo: false,
-      defaultRisk: "HIGH",
-      defaultMode: "STEP_UP",
-      description: "Post a message to Slack.",
+      defaultRisk: "MEDIUM",
+      defaultMode: "CONFIRM",
+      description: "Post a message or summary to Slack.",
       inputSchema: {
         type: "object",
         properties: {
+          action: { type: "string", enum: ["post", "summary"] },
           channel: { type: "string" },
           text: { type: "string" },
-        },
-        required: ["channel", "text"],
-      },
-      handler: async (userId, input) => {
-        const accessToken = await getSlackAccessToken(userId);
-        const channel = String(input.channel || "");
-        const text = String(input.text || "");
-        if (!channel) throw new Error("Missing channel");
-        if (!text) throw new Error("Missing text");
-        const result = await slackPostMessage(accessToken, channel, text);
-        return { message: result };
-      },
-    },
-    {
-      name: "summarize_github_to_slack",
-      needsRepo: false,
-      defaultRisk: "HIGH",
-      defaultMode: "STEP_UP",
-      description: "Summarize GitHub repos and post to Slack.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          channel: { type: "string" },
           limit: { type: "number" },
         },
-        required: ["channel"],
+        required: ["action", "channel"],
         additionalProperties: false,
       },
       handler: async (userId, input) => {
+        const action = String(input.action || "post");
         const channel = String(input.channel || "");
-        const limit = Number(
-          input.limit || process.env.GITHUB_SUMMARY_LIMIT || 10,
-        );
-        if (!channel) throw new Error("Missing channel");
-        const [githubToken, slackToken] = await Promise.all([
-          getGithubAccessToken(userId),
-          getSlackAccessToken(userId),
-        ]);
-        const repos = await githubListRepos(githubToken);
-        const summary = buildGithubSummary(
-          repos,
-          Number.isFinite(limit) ? Math.max(1, Math.min(50, limit)) : 10,
-        );
-        const result = await slackPostMessage(slackToken, channel, summary);
-        return { message: result, count: repos.length };
+        const text = String(input.text || "");
+
+        if (!channel) {
+          throw new Error("Missing Slack channel");
+        }
+        if (!text) {
+          throw new Error("Missing Slack message text");
+        }
+
+        const slackToken = await getSlackAccessToken(userId);
+        const result = await slackPostMessage(slackToken, channel, text);
+        return { ok: result.ok, channel, action };
       },
     },
   ];
@@ -296,9 +319,9 @@ export function getToolIndex(tools: ToolDefinition[]) {
 export function formatToolListForPrompt(tools: ToolDefinition[]) {
   return tools
     .map((tool) => {
-      const desc = tool.description ? ` - ${tool.description}` : "";
+      const description = tool.description ? ` - ${tool.description}` : "";
       const schema = tool.inputSchema ? JSON.stringify(tool.inputSchema) : "{}";
-      return `${tool.name}${desc} inputSchema=${schema} defaultRisk=${tool.defaultRisk} defaultMode=${tool.defaultMode}`;
+      return `${tool.name}${description}\n  inputSchema: ${schema}`;
     })
     .join("\n");
 }

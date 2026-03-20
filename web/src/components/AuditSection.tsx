@@ -17,6 +17,7 @@ export default function AuditSection({ audit }: AuditSectionProps) {
               <th align="left">Decision</th>
               <th align="left">Executed</th>
               <th align="left">Reason</th>
+              <th align="left">Reasoning</th>
             </tr>
           </thead>
           <tbody>
@@ -27,6 +28,7 @@ export default function AuditSection({ audit }: AuditSectionProps) {
                 <td>{a.decision}</td>
                 <td>{String(a.executed)}</td>
                 <td>{a.reason ?? ""}</td>
+                <td>{a.reasoning ?? ""}</td>
               </tr>
             ))}
           </tbody>

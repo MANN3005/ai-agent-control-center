@@ -1,22 +1,22 @@
-@import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
 
 :root {
-  --bg: #fff7ee;
-  --bg-2: #f6f0ff;
+  --bg: #f4f6f9;
+  --bg-2: #eef2f7;
   --panel: #ffffff;
-  --panel-2: #f9f4ff;
+  --panel-2: #f7f9fc;
   --panel-strong: #ffffff;
-  --text: #1b122a;
-  --muted: #6d5c7f;
-  --accent: #0aa4b2;
-  --accent-2: #1372d1;
-  --line: #efe5ff;
-  --shadow: 0 18px 40px rgba(27, 18, 42, 0.12);
-  --radius-lg: 22px;
-  --radius-md: 16px;
+  --text: #1b2430;
+  --muted: #5b677a;
+  --accent: #0972d3;
+  --accent-2: #0f4dc2;
+  --line: #d7dde7;
+  --shadow: 0 18px 36px rgba(15, 35, 65, 0.14);
+  --radius-lg: 18px;
+  --radius-md: 12px;
   --radius-pill: 999px;
 
-  font-family: "Sora", system-ui, -apple-system, sans-serif;
+  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
   color: var(--text);
   background-color: var(--bg);
   text-rendering: optimizeLegibility;
@@ -31,9 +31,9 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(900px 420px at 8% -10%, rgba(10, 164, 178, 0.18), transparent 60%),
-    radial-gradient(900px 420px at 92% 0%, rgba(19, 114, 209, 0.2), transparent 60%),
-    radial-gradient(700px 520px at 50% 115%, rgba(255, 170, 107, 0.16), transparent 60%),
+    radial-gradient(900px 420px at 6% -8%, rgba(9, 114, 211, 0.12), transparent 60%),
+    radial-gradient(900px 420px at 92% 0%, rgba(15, 77, 194, 0.12), transparent 60%),
+    radial-gradient(700px 520px at 50% 115%, rgba(245, 130, 32, 0.1), transparent 60%),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
 }
 

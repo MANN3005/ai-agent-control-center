@@ -1,4 +1,14 @@
-import type { AgentMessage, AgentPayload, AgentPlanStep, AgentRun, AgentStep, AgentTrace, Issue, Repo } from "../types";
+import type {
+  AgentMessage,
+  AgentPayload,
+  AgentPlanStep,
+  AgentRun,
+  AgentStep,
+  AgentTrace,
+  Issue,
+  Pull,
+  Repo,
+} from "../types";
 
 type StepUpInfo = {
   active: boolean;
@@ -14,10 +24,12 @@ type AgentPanelProps = {
   agentMessages: AgentMessage[];
   agentSteps: AgentStep[];
   agentTrace: AgentTrace[];
+  pendingApprovalStep?: AgentStep | null;
   pendingApprovalStatus: string | null;
   approvalError: string | null;
   onConfirm: () => void;
   onApprove: () => void;
+  onAllowListRepo: (repo: string) => void;
   stepUpInfo: StepUpInfo;
   onStartStepUp: () => void;
 };
@@ -90,6 +102,39 @@ function renderAgentOutput(step: AgentStep) {
     );
   }
 
+  if (Array.isArray(payload.pulls)) {
+    return (
+      <div className="table-wrap">
+        <table cellPadding={6} className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th align="left">#</th>
+              <th align="left">Title</th>
+              <th align="left">State</th>
+              <th align="left">Draft</th>
+              <th align="left">Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {payload.pulls.map((pull: Pull) => (
+              <tr key={pull.id}>
+                <td>{pull.number}</td>
+                <td>{pull.title}</td>
+                <td>{pull.state}</td>
+                <td>{pull.draft ? "Yes" : "No"}</td>
+                <td>
+                  <a href={pull.htmlUrl} target="_blank" rel="noreferrer">
+                    Open
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   if (payload.issue) {
     return (
       <div className="table-wrap">
@@ -130,10 +175,12 @@ export default function AgentPanel({
   agentMessages,
   agentSteps,
   agentTrace,
+  pendingApprovalStep,
   pendingApprovalStatus,
   approvalError,
   onConfirm,
   onApprove,
+  onAllowListRepo,
   stepUpInfo,
   onStartStepUp,
 }: AgentPanelProps) {
@@ -141,12 +188,20 @@ export default function AgentPanel({
     ? agentMessages
     : [{ role: "agent", text: "Say hello to start." }];
 
+  const allowListStep = [...agentSteps]
+    .reverse()
+    .find((step) => step.reason === "Repo not allow-listed" && step.input?.repo);
+  const allowListRepo = allowListStep?.input?.repo as string | undefined;
+  const approvalPreview = (pendingApprovalStep?.result as any)?.preview as
+    | { tool?: string; input?: Record<string, unknown> }
+    | undefined;
+
   return (
     <div className="section-card">
       <h2>Agent</h2>
       <p>
-        Everything is driven by messages. Ask the agent to list repos, list issues, create issues, or
-        close issues. Approvals are handled by replying here when prompted.
+        Everything is driven by messages. Ask the agent to list repos, issues, or PRs, create issues,
+        or post summaries to Slack. Approvals are handled by replying here when prompted.
       </p>
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="meta-label">Step-up Session</div>
@@ -173,6 +228,30 @@ export default function AgentPanel({
             </div>
           ))}
         </div>
+        {allowListRepo ? (
+          <div className="card" style={{ marginTop: 10 }}>
+            <div className="meta-label">Repo not allow-listed</div>
+            <div style={{ marginTop: 6 }}>{allowListRepo}</div>
+            <div style={{ marginTop: 8 }}>
+              <button type="button" onClick={() => onAllowListRepo(allowListRepo)}>
+                Add to allow-list
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {approvalPreview ? (
+          <div className="card" style={{ marginTop: 10 }}>
+            <div className="meta-label">Approval preview</div>
+            <div style={{ marginTop: 6 }}>
+              <div>
+                Tool: <b>{approvalPreview.tool || "-"}</b>
+              </div>
+              <div style={{ marginTop: 6, color: "var(--muted)", fontSize: 12 }}>
+                {JSON.stringify(approvalPreview.input || {}, null, 2)}
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="chat-input-row">
           <textarea
             className="input textarea"

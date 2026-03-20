@@ -62,6 +62,28 @@ export async function githubListIssues(
   }));
 }
 
+export async function githubListPulls(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  state: string,
+) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=${encodeURIComponent(state)}`;
+  const pulls = await githubRequest<any[]>(accessToken, url);
+
+  return pulls.map((p) => ({
+    id: p.id,
+    number: p.number,
+    title: p.title,
+    state: p.state,
+    draft: Boolean(p.draft),
+    htmlUrl: p.html_url,
+    user: p.user?.login ?? null,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+  }));
+}
+
 export async function githubCreateIssue(
   accessToken: string,
   owner: string,
@@ -104,6 +126,93 @@ export async function githubCloseIssue(
     title: updated.title,
     state: updated.state,
     htmlUrl: updated.html_url,
+  };
+}
+
+export async function githubReopenIssue(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+  const updated = await githubRequest<any>(accessToken, url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state: "open" }),
+  });
+
+  return {
+    id: updated.id,
+    number: updated.number,
+    title: updated.title,
+    state: updated.state,
+    htmlUrl: updated.html_url,
+  };
+}
+
+export async function githubCommentIssue(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  comment: string,
+) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`;
+  const created = await githubRequest<any>(accessToken, url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ body: comment }),
+  });
+
+  return {
+    id: created.id,
+    body: created.body,
+    htmlUrl: created.html_url,
+  };
+}
+
+export async function githubAssignIssue(
+  accessToken: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  assignee: string,
+) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/assignees`;
+  const updated = await githubRequest<any>(accessToken, url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assignees: [assignee] }),
+  });
+
+  return {
+    id: updated.id,
+    number: updated.number,
+    title: updated.title,
+    state: updated.state,
+    htmlUrl: updated.html_url,
+  };
+}
+
+export async function githubFindUserByEmail(
+  accessToken: string,
+  email: string,
+) {
+  const url = `https://api.github.com/search/users?q=${encodeURIComponent(
+    `email:${email}`,
+  )}`;
+  const result = await githubRequest<any>(accessToken, url);
+  const first = Array.isArray(result.items) ? result.items[0] : null;
+  return first?.login as string | null;
+}
+
+export async function githubGetUserById(accessToken: string, id: string) {
+  const url = `https://api.github.com/user/${encodeURIComponent(id)}`;
+  const user = await githubRequest<any>(accessToken, url);
+  return {
+    id: user.id,
+    login: user.login as string,
   };
 }
 
@@ -152,9 +261,17 @@ export async function githubCreateIssueWithAssignee(
   assignee: string,
 ) {
   const url = `https://api.github.com/repos/${owner}/${repo}/issues`;
-  return githubRequest<any>(accessToken, url, {
+  const created = await githubRequest<any>(accessToken, url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, body, assignees: [assignee] }),
   });
+
+  return {
+    id: created.id,
+    number: created.number,
+    title: created.title,
+    state: created.state,
+    htmlUrl: created.html_url,
+  };
 }

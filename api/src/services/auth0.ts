@@ -78,6 +78,14 @@ export async function getSlackAccessToken(userId: string) {
   return accessToken as string;
 }
 
+export async function getAuth0UserEmail(userId: string) {
+  const client = getAuth0ManagementClient();
+  const userResponse: any = await client.users.get({ id: userId });
+  const user = userResponse?.data ?? userResponse;
+  const email = user?.email as string | undefined;
+  return email || null;
+}
+
 export async function hasSlackIdentity(userId: string) {
   const client = getAuth0ManagementClient();
   const userResponse: any = await client.users.get({ id: userId });
@@ -88,6 +96,17 @@ export async function hasSlackIdentity(userId: string) {
       identity?.provider === "sign-in-with-slack" ||
       identity?.connection === AUTH0_SLACK_CONNECTION,
   );
+}
+
+export async function findAuth0UserBySlackUserId(slackUserId: string) {
+  const client = getAuth0ManagementClient();
+  const query = `identities.user_id:"${slackUserId}" AND identities.connection:"${AUTH0_SLACK_CONNECTION}"`;
+  const response: any = await client.users.getAll({
+    q: query,
+    search_engine: "v3",
+  } as any);
+  const users = response?.data ?? response ?? [];
+  return Array.isArray(users) && users.length ? users[0] : null;
 }
 
 export function getAuth0Connections() {
