@@ -13,11 +13,25 @@ export type Me = {
 export type AuditEntry = {
   id: string;
   createdAt: string;
+  requestId?: string | null;
   toolName: string;
   decision: string;
   executed: boolean;
   reason?: string | null;
   reasoning?: string | null;
+  inputJson?: Record<string, unknown> | null;
+  resultJson?: Record<string, unknown> | null;
+};
+
+export type LlmAuditEntry = {
+  id: string;
+  createdAt: string;
+  callType: "plan" | "recovery" | "reply";
+  model: string;
+  requestId?: string | null;
+  runId?: string | null;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
 };
 
 export type AgentMessage = {

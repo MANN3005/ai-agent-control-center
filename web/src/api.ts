@@ -7,6 +7,16 @@ type Policy = {
   mode: "AUTO" | "CONFIRM" | "STEP_UP";
 };
 
+export type GithubRepoPreview = {
+  id: string | number;
+  fullName?: string;
+  name?: string;
+  description?: string;
+  stargazersCount?: number;
+  private?: boolean;
+  htmlUrl?: string;
+};
+
 async function authedFetch(
   path: string,
   accessToken: string,
@@ -89,6 +99,22 @@ export async function executeTool(
   return res.json();
 }
 
+export async function listAccessibleGithubRepos(accessToken: string) {
+  const data = await executeTool(accessToken, {
+    requestId: crypto.randomUUID(),
+    tool: "github_explorer",
+    input: { resource: "repos" },
+  });
+
+  if (Array.isArray(data?.result?.repos)) {
+    return data.result.repos as GithubRepoPreview[];
+  }
+  if (Array.isArray(data?.repos)) {
+    return data.repos as GithubRepoPreview[];
+  }
+  return [] as GithubRepoPreview[];
+}
+
 // ----- agent run -----
 export async function runAgent(
   accessToken: string,
@@ -131,6 +157,12 @@ export async function continueAgent(
 export async function getAudit(accessToken: string, limit = 50) {
   const res = await authedFetch(`/audit?limit=${limit}`, accessToken);
   if (!res.ok) return []; // prevent JSON parse crash
+  return res.json();
+}
+
+export async function getLlmAudit(accessToken: string, limit = 50) {
+  const res = await authedFetch(`/llm-audit?limit=${limit}`, accessToken);
+  if (!res.ok) return [];
   return res.json();
 }
 

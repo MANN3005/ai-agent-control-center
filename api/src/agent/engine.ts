@@ -35,6 +35,39 @@ const TOOL_CALL_HISTORY = new Map<string, number[]>();
 const CIRCUIT_WINDOW_MS = 10_000;
 const CIRCUIT_LIMIT = 5;
 
+export type LlmAuditEntry = {
+  id: string;
+  userId: string;
+  runId: string | null;
+  requestId: string | null;
+  callType: "plan" | "recovery" | "reply";
+  model: string;
+  input: Record<string, any>;
+  output: Record<string, any>;
+  createdAt: string;
+};
+
+export const LLM_AUDIT_LOGS = new Map<string, LlmAuditEntry[]>();
+
+function clip(value: string, max = 1000) {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
+function recordLlmAudit(entry: Omit<LlmAuditEntry, "id" | "createdAt">) {
+  if (!entry.userId) return;
+  const next: LlmAuditEntry = {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    ...entry,
+    input: JSON.parse(clip(JSON.stringify(entry.input || {}), 4000)),
+    output: JSON.parse(clip(JSON.stringify(entry.output || {}), 4000)),
+  };
+  const current = LLM_AUDIT_LOGS.get(entry.userId) || [];
+  current.unshift(next);
+  LLM_AUDIT_LOGS.set(entry.userId, current.slice(0, 200));
+}
+
 function buildDecisionReason(tool: string, input: Record<string, any>) {
   if (tool === "github_explorer") {
     const resource = String(input.resource || "repos");
@@ -127,6 +160,7 @@ export async function generateAgentPlan(
   task: string,
   context: Record<string, any>,
   tools: ToolDefinition[],
+  meta?: { userId?: string; runId?: string; requestId?: string },
 ) {
   const client = getGroqClient();
   const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
@@ -166,6 +200,24 @@ export async function generateAgentPlan(
   if (!parsed || !Array.isArray(parsed.steps)) {
     throw new Error("Agent plan missing steps");
   }
+
+  recordLlmAudit({
+    userId: String(meta?.userId || ""),
+    runId: meta?.runId || null,
+    requestId: meta?.requestId || null,
+    callType: "plan",
+    model,
+    input: {
+      task,
+      context,
+      tools: tools.map((t) => t.name),
+    },
+    output: {
+      question: typeof parsed.question === "string" ? parsed.question : "",
+      stepsCount: Array.isArray(parsed.steps) ? parsed.steps.length : 0,
+      steps: parsed.steps,
+    },
+  });
 
   return {
     steps: parsed.steps as AgentStep[],
@@ -502,6 +554,7 @@ export async function generateRecoveryAction(
   failedStep: AgentStep,
   error: string,
   tools: ToolDefinition[],
+  meta?: { userId?: string; runId?: string; requestId?: string },
 ) {
   const client = getGroqClient();
   const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
@@ -530,6 +583,27 @@ export async function generateRecoveryAction(
   const content = completion.choices[0]?.message?.content || "";
   const parsed = safeJsonParse(content, null);
 
+  recordLlmAudit({
+    userId: String(meta?.userId || ""),
+    runId: meta?.runId || null,
+    requestId: meta?.requestId || null,
+    callType: "recovery",
+    model,
+    input: {
+      task,
+      context,
+      failedStep,
+      error,
+      tools: tools.map((t) => t.name),
+    },
+    output: {
+      action: parsed?.action || "abort",
+      rationale: parsed?.rationale || "",
+      question: parsed?.question || "",
+      step: parsed?.step || null,
+    },
+  });
+
   if (!parsed || typeof parsed.action !== "string") {
     return { action: "abort" as const };
   }
@@ -544,6 +618,7 @@ export async function generateAgentReply(
   task: string,
   step: AgentStep,
   result: any,
+  meta?: { userId?: string; runId?: string; requestId?: string },
 ) {
   const client = getGroqClient();
   const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
@@ -565,6 +640,15 @@ export async function generateAgentReply(
   });
 
   const content = completion.choices[0]?.message?.content || "";
+  recordLlmAudit({
+    userId: String(meta?.userId || ""),
+    runId: meta?.runId || null,
+    requestId: meta?.requestId || null,
+    callType: "reply",
+    model,
+    input: { task, step, result },
+    output: { reply: content.trim() || "Step completed." },
+  });
   return content.trim() || "Step completed.";
 }
 
@@ -721,6 +805,11 @@ export async function runAgentLoop(runId: string) {
             step,
             responseBody.reason || "Tool error",
             tools,
+            {
+              userId: run.userId,
+              runId: run.id,
+              requestId: `${run.id}:${stepIndex + 1}`,
+            },
           );
           if (recovery.rationale) {
             trace(run, "status", `Recovery: ${recovery.rationale}`);
@@ -780,7 +869,11 @@ export async function runAgentLoop(runId: string) {
       trace(run, "status", `Step ${stepIndex + 1}: executed`);
 
       try {
-        const reply = await generateAgentReply(run.task, step, responseBody);
+        const reply = await generateAgentReply(run.task, step, responseBody, {
+          userId: run.userId,
+          runId: run.id,
+          requestId: `${run.id}:${stepIndex + 1}`,
+        });
         run.messages.push({ role: "agent", text: reply });
       } catch {
         run.messages.push({ role: "agent", text: "Step completed." });
@@ -926,7 +1019,10 @@ export async function executeToolWithPolicy(
         if (!candidate) return false;
         if (candidate === resolvedLower) return true;
         if (!candidate.includes("/") && candidate === resolvedName) return true;
-        if (candidate.includes("/") && candidate.split("/").pop() === resolvedName)
+        if (
+          candidate.includes("/") &&
+          candidate.split("/").pop() === resolvedName
+        )
           return true;
         return false;
       });
@@ -1152,7 +1248,10 @@ export async function executeToolWithPolicy(
           if (!candidate) return false;
           if (candidate === repoLower) return true;
           if (!candidate.includes("/") && candidate === repoName) return true;
-          if (candidate.includes("/") && candidate.split("/").pop() === repoName)
+          if (
+            candidate.includes("/") &&
+            candidate.split("/").pop() === repoName
+          )
             return true;
           return false;
         });

@@ -1,17 +1,34 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
-import { NavLink, Route, Routes } from "react-router-dom";
+import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import {
+  AnimatePresence,
+  LazyMotion,
+  domAnimation,
+  m,
+} from "framer-motion";
+import {
+  Bot,
+  ClipboardList,
+  Eye,
+  GitBranch,
+  Home,
+  ListChecks,
+  Sparkles,
+} from "lucide-react";
 import {
   getMe,
   getPolicies,
   putPolicies,
   getAllowedRepos,
+  listAccessibleGithubRepos,
   putAllowedRepos,
   startStepUp,
   runAgent,
   getAgentRun,
   continueAgent,
   getAudit,
+  getLlmAudit,
   getIdentities,
   linkIdentity,
   unlinkIdentity,
@@ -20,17 +37,19 @@ import AgentPanel from "./components/AgentPanel";
 import AllowListSection from "./components/AllowListSection";
 import PoliciesSection from "./components/PoliciesSection";
 import AuditSection from "./components/AuditSection";
-import Dashboard from "./components/Dashboard";
+import LlmAuditSection from "./components/LlmAuditSection";
+import Dashboard from "./components/Dashboard.tsx";
 import type {
   AuditEntry,
   AgentMessage,
   AgentRun,
   AgentTrace,
   IdentityEntry,
+  LlmAuditEntry,
   Me,
   Policy,
 } from "./types";
-import "./App.css";
+import type { GithubRepoPreview } from "./api";
 
 const DEFAULTS: Policy[] = [
   { toolName: "github_explorer", riskLevel: "LOW", mode: "AUTO" },
@@ -51,13 +70,35 @@ function uuid() {
   return crypto.randomUUID();
 }
 
+const navBaseClass =
+  "inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/6 px-3.5 py-1.5 text-sm font-semibold text-slate-200 transition";
+
+const navClassName = ({ isActive }: { isActive: boolean }) =>
+  isActive
+    ? `${navBaseClass} border-cyan-300/55 bg-cyan-300/22 text-cyan-100 shadow-[0_0_16px_rgba(64,224,255,0.24)]`
+    : `${navBaseClass} hover:border-cyan-300/35 hover:bg-white/10 hover:text-slate-100`;
+
+const navItems = [
+  { to: "/", label: "Home", icon: Home },
+  { to: "/allow-list", label: "Allow-list", icon: ListChecks },
+  { to: "/policies", label: "Policies", icon: ClipboardList },
+  { to: "/agent", label: "Agent", icon: Bot },
+  { to: "/audit", label: "Audit", icon: Eye },
+  { to: "/llm-audit", label: "LLM Trace", icon: Sparkles },
+] as const;
+
 export default function App() {
   const { isAuthenticated, user, loginWithRedirect, logout, getAccessTokenSilently } = useAuth0();
+  const location = useLocation();
+  const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<Me | null>(null);
   const [policies, setPolicies] = useState<Policy[]>(DEFAULTS);
   const [allowedReposText, setAllowedReposText] = useState("");
+  const [githubRepos, setGithubRepos] = useState<GithubRepoPreview[]>([]);
+  const [loadingGithubRepos, setLoadingGithubRepos] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [llmAudit, setLlmAudit] = useState<LlmAuditEntry[]>([]);
   const [stepUpId, setStepUpId] = useState<string | null>(null);
   const [stepUpExpiresAt, setStepUpExpiresAt] = useState<string | null>(null);
   const [stepUpRemainingMs, setStepUpRemainingMs] = useState<number | null>(null);
@@ -73,6 +114,10 @@ export default function App() {
   });
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
+  const [policySyncing, setPolicySyncing] = useState(false);
+  const [policyToast, setPolicyToast] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [routeSkeletonVisible, setRouteSkeletonVisible] = useState(false);
 
   const [agentTask, setAgentTask] = useState("");
   const [agentRunId, setAgentRunId] = useState<string | null>(null);
@@ -95,41 +140,52 @@ export default function App() {
       return;
     }
 
-    const accessToken = await getApiToken();
-    const [meRes, policiesRes, allowedRes, auditRes, identitiesRes] = await Promise.all([
-      getMe(accessToken),
-      getPolicies(accessToken),
-      getAllowedRepos(accessToken),
-      getAudit(accessToken, 25),
-      getIdentities(accessToken),
-    ]);
+    setRefreshing(true);
+    try {
+      const accessToken = await getApiToken();
+      setLoadingGithubRepos(true);
+      const [meRes, policiesRes, allowedRes, auditRes, llmAuditRes, identitiesRes, githubReposRes] = await Promise.all([
+        getMe(accessToken),
+        getPolicies(accessToken),
+        getAllowedRepos(accessToken),
+        getAudit(accessToken, 25),
+        getLlmAudit(accessToken, 25),
+        getIdentities(accessToken),
+        listAccessibleGithubRepos(accessToken).catch(() => []),
+      ]);
 
-    setMe(meRes as Me);
-    setAllowedReposText(Array.isArray(allowedRes) ? allowedRes.join("\n") : "");
-    setAudit(Array.isArray(auditRes) ? (auditRes as AuditEntry[]) : []);
-    const nextIdentities: IdentityEntry[] = Array.isArray(identitiesRes?.identities)
-      ? (identitiesRes.identities as IdentityEntry[])
-      : [];
-    setIdentities(nextIdentities);
-    const isGooglePrimary = nextIdentities.some(
-      (identity: IdentityEntry) =>
-        identity?.provider === "google-oauth2" ||
-        identity?.provider === "google" ||
-        identity?.connection === "google" ||
-        identity?.connection === "google-oauth2",
-    );
-    if (isGooglePrimary && (meRes as Me)?.userId && typeof window !== "undefined") {
-      window.localStorage.setItem(PRIMARY_USER_KEY, (meRes as Me).userId);
-      setPrimaryUserId((meRes as Me).userId);
+      setMe(meRes as Me);
+      setAllowedReposText(Array.isArray(allowedRes) ? allowedRes.join("\n") : "");
+      setAudit(Array.isArray(auditRes) ? (auditRes as AuditEntry[]) : []);
+      setLlmAudit(Array.isArray(llmAuditRes) ? (llmAuditRes as LlmAuditEntry[]) : []);
+      const nextIdentities: IdentityEntry[] = Array.isArray(identitiesRes?.identities)
+        ? (identitiesRes.identities as IdentityEntry[])
+        : [];
+      setIdentities(nextIdentities);
+      setGithubRepos(Array.isArray(githubReposRes) ? githubReposRes : []);
+      const isGooglePrimary = nextIdentities.some(
+        (identity: IdentityEntry) =>
+          identity?.provider === "google-oauth2" ||
+          identity?.provider === "google" ||
+          identity?.connection === "google" ||
+          identity?.connection === "google-oauth2",
+      );
+      if (isGooglePrimary && (meRes as Me)?.userId && typeof window !== "undefined") {
+        window.localStorage.setItem(PRIMARY_USER_KEY, (meRes as Me).userId);
+        setPrimaryUserId((meRes as Me).userId);
+      }
+      if (Array.isArray(policiesRes) && policiesRes.length) {
+        const merged = new Map(DEFAULTS.map((p) => [p.toolName, p]));
+        (policiesRes as Policy[]).forEach((p) => merged.set(p.toolName, p));
+        setPolicies(Array.from(merged.values()));
+      } else {
+        setPolicies(DEFAULTS);
+      }
+    } finally {
+      setLoadingGithubRepos(false);
+      setLoading(false);
+      setRefreshing(false);
     }
-    if (Array.isArray(policiesRes) && policiesRes.length) {
-      const merged = new Map(DEFAULTS.map((p) => [p.toolName, p]));
-      (policiesRes as Policy[]).forEach((p) => merged.set(p.toolName, p));
-      setPolicies(Array.from(merged.values()));
-    } else {
-      setPolicies(DEFAULTS);
-    }
-    setLoading(false);
   }, [getApiToken, isAuthenticated]);
 
   function storeLinkProvider(provider: string | null) {
@@ -150,6 +206,14 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      setCursor({ x: event.clientX, y: event.clientY });
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, []);
+
+  useEffect(() => {
     if (!stepUpExpiresAt) return undefined;
 
     const intervalId = window.setInterval(() => {
@@ -165,6 +229,17 @@ export default function App() {
 
     return () => window.clearInterval(intervalId);
   }, [stepUpExpiresAt]);
+
+  useEffect(() => {
+    const pathsWithDataFetchSkeleton = new Set(["/audit", "/llm-audit", "/policies"]);
+    if (!pathsWithDataFetchSkeleton.has(location.pathname)) {
+      setRouteSkeletonVisible(false);
+      return;
+    }
+    setRouteSkeletonVisible(true);
+    const timeoutId = window.setTimeout(() => setRouteSkeletonVisible(false), 520);
+    return () => window.clearTimeout(timeoutId);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!isAuthenticated || !agentRunId) return;
@@ -266,10 +341,22 @@ export default function App() {
   }
 
   async function savePolicies() {
-    const accessToken = await getApiToken();
-    await putPolicies(accessToken, policies);
-    await refresh();
+    try {
+      setPolicySyncing(true);
+      const accessToken = await getApiToken();
+      await putPolicies(accessToken, policies);
+      await refresh();
+      setPolicyToast("[SYSTEM]: Policy manifest synced to Agent Node.");
+    } finally {
+      setPolicySyncing(false);
+    }
   }
+
+  useEffect(() => {
+    if (!policyToast) return;
+    const timeoutId = window.setTimeout(() => setPolicyToast(null), 2400);
+    return () => window.clearTimeout(timeoutId);
+  }, [policyToast]);
 
   async function doStepUp() {
     const accessToken = await getApiToken();
@@ -308,17 +395,20 @@ export default function App() {
     }
   }
 
-  async function linkSecondaryToPrimary(secondaryUserId: string, provider: string) {
-    if (!primaryUserId) {
-      throw new Error("Primary account is not stored. Log in with Google first.");
-    }
-    const accessToken = await getApiToken();
-    return linkIdentity(accessToken, {
-      primaryUserId,
-      secondaryUserId,
-      provider,
-    });
-  }
+  const linkSecondaryToPrimary = useCallback(
+    async (secondaryUserId: string, provider: string) => {
+      if (!primaryUserId) {
+        throw new Error("Primary account is not stored. Log in with Google first.");
+      }
+      const accessToken = await getApiToken();
+      return linkIdentity(accessToken, {
+        primaryUserId,
+        secondaryUserId,
+        provider,
+      });
+    },
+    [getApiToken, primaryUserId],
+  );
 
   function startLink(provider: "github" | "slack") {
     const connection = provider === "github" ? GITHUB_CONNECTION : SLACK_CONNECTION;
@@ -376,9 +466,10 @@ export default function App() {
             prompt: "login",
           },
         });
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!active) return;
-        setLinkError(err?.message || "Link failed.");
+        const message = err instanceof Error ? err.message : "Link failed.";
+        setLinkError(message);
         storeLinkProvider(null);
       } finally {
         if (active) setLinking(false);
@@ -394,6 +485,7 @@ export default function App() {
     user?.sub,
     primaryUserId,
     linking,
+    linkSecondaryToPrimary,
     loginWithRedirect,
   ]);
 
@@ -419,13 +511,21 @@ export default function App() {
     loginWithRedirect,
   ]);
 
-  if (loading) return <div className="app">Loading...</div>;
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-900 text-slate-200">
+        Loading...
+      </div>
+    );
+  }
 
   const allowListSection = (
     <AllowListSection
       allowedReposText={allowedReposText}
       onChange={setAllowedReposText}
       onSave={saveAllowedRepos}
+      githubRepos={githubRepos}
+      loadingRepos={loadingGithubRepos}
     />
   );
 
@@ -439,6 +539,7 @@ export default function App() {
   );
 
   const auditSection = <AuditSection audit={audit} />;
+  const llmAuditSection = <LlmAuditSection entries={llmAudit} />;
 
   const dashboard = (
     <Dashboard
@@ -480,76 +581,220 @@ export default function App() {
     />
   );
 
-  return (
-    <div className="app shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="eyebrow">Secure Agentic Ops</div>
-          <div className="brand-title">AI Agent Control Center</div>
-        </div>
-        <nav className="side-nav">
-          <NavLink to="/">Home</NavLink>
-          <NavLink to="/allow-list">Allow-list</NavLink>
-          <NavLink to="/policies">Policies</NavLink>
-          <NavLink to="/agent">Agent</NavLink>
-          <NavLink to="/audit">Audit</NavLink>
-        </nav>
-      </aside>
-      <div className="content">
-        <header className="topbar">
-          <div>
-            <h1 className="title">Control Plane</h1>
-            <div className="subtitle">Policy-gated tool execution with audit trails</div>
-          </div>
-          <div className="auth-row">
-            {!isAuthenticated ? (
-              <button
-                type="button"
-                onClick={() =>
-                  loginWithRedirect({
-                    authorizationParams: {
-                      redirect_uri: window.location.origin,
-                      audience: "https://control-center-api",
-                    },
-                  })
-                }
-              >
-                Log in
-              </button>
-            ) : (
-              <>
-                <span>
-                  Logged in as <b>{user?.email ?? user?.name ?? user?.sub}</b>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
-                >
-                  Log out
-                </button>
-              </>
-            )}
-          </div>
-        </header>
+  const showRouteSkeleton =
+    isAuthenticated &&
+    (routeSkeletonVisible || refreshing) &&
+    ["/audit", "/llm-audit", "/policies"].includes(location.pathname);
 
-        <main className="page">
-          {!isAuthenticated ? (
-            <div className="card">
-              <h2>Welcome</h2>
-              <p>Please log in to view and manage policies.</p>
+  const skeletonCard = "rounded-2xl border border-white/10 bg-slate-800/65 animate-pulse";
+
+  const routeSkeleton = (
+    <div className="rounded-[2.1rem] border border-white/15 bg-white/8 p-6 backdrop-blur-xl md:p-7">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, idx) => (
+          <div key={`s-card-${idx}`} className={`${skeletonCard} h-24`} />
+        ))}
+      </div>
+      <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-3">
+        <div className={`${skeletonCard} h-11`} />
+        <div className="mt-3 flex gap-2">
+          <div className={`${skeletonCard} h-8 w-18 rounded-full`} />
+          <div className={`${skeletonCard} h-8 w-18 rounded-full`} />
+          <div className={`${skeletonCard} h-8 w-18 rounded-full`} />
+        </div>
+      </div>
+      <div className="mt-4 rounded-[1.6rem] border-2 border-black bg-black/35 p-3">
+        <div className="grid gap-2">
+          {Array.from({ length: 7 }).map((_, idx) => (
+            <div key={`s-row-${idx}`} className={`${skeletonCard} h-13`} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const agentStatusLabel =
+    stepUpId || agentRun?.status === "RUNNING" || agentRun?.status === "WAITING_APPROVAL"
+      ? "PROCESSING"
+      : "STANDBY";
+  const identityLabel = user?.email ?? user?.name ?? user?.sub ?? "Account";
+  const identityInitial = identityLabel.charAt(0).toUpperCase();
+
+  return (
+    <LazyMotion features={domAnimation}>
+      <div className="relative min-h-screen overflow-x-clip bg-[#0a0a0a] text-slate-100 font-['Inter_Tight',sans-serif]">
+        <AnimatePresence>
+          {policySyncing ? (
+            <m.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="pointer-events-none fixed left-0 right-0 top-0 z-70 h-1 bg-cyan-300/25"
+            >
+              <m.div
+                className="h-full w-1/3 bg-cyan-300 shadow-[0_0_18px_rgba(64,224,255,0.8)]"
+                initial={{ x: "-120%" }}
+                animate={{ x: "420%" }}
+                transition={{ duration: 1.05, repeat: Infinity, ease: "linear" }}
+              />
+            </m.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {policyToast ? (
+            <m.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              className="fixed bottom-5 right-5 z-70 rounded-xl border border-cyan-300/35 bg-[#0f141f]/90 px-4 py-3 font-mono text-sm text-cyan-100 shadow-[0_0_24px_rgba(64,224,255,0.25)]"
+            >
+              {policyToast}
+            </m.div>
+          ) : null}
+        </AnimatePresence>
+
+        <div
+          className="pointer-events-none fixed inset-0 -z-10"
+          style={{
+            background: `radial-gradient(520px circle at ${cursor.x}px ${cursor.y}px, rgba(34,211,238,0.2), rgba(232,121,249,0.14) 35%, rgba(10,10,10,0.92) 68%)`,
+          }}
+        />
+        <div className="pointer-events-none fixed inset-0 -z-20 bg-[radial-gradient(55rem_55rem_at_0%_0%,rgba(30,45,72,0.5),transparent_62%),radial-gradient(55rem_55rem_at_100%_100%,rgba(14,25,44,0.45),transparent_66%)]">
+          <m.div
+            className="animate-aurora absolute -left-28 -top-35 h-107.5 w-107.5 rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.32)_0%,rgba(56,189,248,0)_72%)]"
+            animate={{ x: [0, 70, -20, 0], y: [0, 40, -12, 0] }}
+            transition={{ duration: 16, repeat: Infinity, ease: "easeInOut" }}
+          />
+          <m.div
+            className="animate-aurora absolute -right-40 top-22.5 h-130 w-130 rounded-full bg-[radial-gradient(circle,rgba(217,70,239,0.28)_0%,rgba(217,70,239,0)_72%)]"
+            animate={{ x: [0, -45, 35, 0], y: [0, -30, 20, 0] }}
+            transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }}
+          />
+          <m.div
+            className="animate-aurora absolute -bottom-45 left-[28%] h-140 w-140 rounded-full bg-[radial-gradient(circle,rgba(250,204,21,0.18)_0%,rgba(250,204,21,0)_70%)]"
+            animate={{ x: [0, 45, -30, 0], y: [0, -45, 20, 0] }}
+            transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}
+          />
+        </div>
+
+        <m.header
+          className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-3 py-3 backdrop-blur-xl md:px-6 lg:px-8 xl:px-10 2xl:px-12"
+        >
+          <div className="grid w-full grid-cols-1 items-center gap-3 lg:grid-cols-[minmax(280px,1fr)_auto_minmax(320px,1fr)]">
+            <m.div className="min-w-0 lg:justify-self-start">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-fuchsia-200/85">
+                From prompt to action, safely.
+              </div>
+              <h1 className="mt-1 max-w-[12ch] bg-linear-to-r from-white via-slate-100 to-slate-400 bg-clip-text font-['Syne',sans-serif] text-4xl leading-[0.92] font-extrabold tracking-[-0.035em] text-transparent [text-shadow:0_0_18px_rgba(255,255,255,0.14)] md:text-5xl lg:text-4xl xl:text-5xl">
+                FlowSnap Control Plane
+              </h1>
+              <div className="mt-1 inline-flex items-center gap-2 text-[13px] font-medium text-cyan-100/75">
+                <GitBranch className="h-3.5 w-3.5" />
+                Immersive governance for AI actions
+              </div>
+            </m.div>
+
+            <nav className="flex flex-wrap items-center justify-start gap-2 overflow-x-auto md:flex-nowrap lg:justify-center">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <NavLink key={item.to} to={item.to} className={navClassName}>
+                    <Icon className="h-3.5 w-3.5" />
+                    {item.label}
+                  </NavLink>
+                );
+              })}
+            </nav>
+
+            <div className="flex flex-col items-end gap-2 lg:justify-self-end">
+              {!isAuthenticated ? (
+                <m.button
+                  type="button"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                  onClick={() =>
+                    loginWithRedirect({
+                      authorizationParams: {
+                        redirect_uri: window.location.origin,
+                        audience: "https://control-center-api",
+                      },
+                    })
+                  }
+                  className="rounded-full border-2 border-black bg-cyan-300 px-5 py-2 text-sm font-bold text-black shadow-[4px_4px_0px_rgba(0,0,0,0.95)]"
+                >
+                  Log in
+                </m.button>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-3 lg:justify-end">
+                    <div className="flex flex-col items-start gap-1.5">
+                      <div className="flex items-center gap-2 rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-base text-slate-200 backdrop-blur-xl">
+                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-cyan-300/40 bg-cyan-300/15 text-sm font-semibold text-cyan-100">
+                          {identityInitial}
+                        </span>
+                        <div>
+                          Logged in as <b>{identityLabel}</b>
+                        </div>
+                      </div>
+                    </div>
+                    <m.button
+                      type="button"
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                      onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
+                      className="rounded-full border border-white/25 bg-transparent px-4 py-2 text-sm font-semibold text-slate-100 transition hover:border-white/40 hover:bg-white/8"
+                    >
+                      Log out
+                    </m.button>
+                  </div>
+                  <div className="rounded-full border border-cyan-300/35 bg-cyan-300/12 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-100 shadow-[0_0_10px_rgba(64,224,255,0.2)]">
+                    Agent: {agentStatusLabel}
+                  </div>
+                </>
+              )}
             </div>
+          </div>
+        </m.header>
+
+        <main className="content-scale grid w-full gap-6 px-3 py-6 md:px-6 lg:px-8 lg:py-8 xl:px-10 2xl:px-12">
+          {!isAuthenticated ? (
+            <m.div
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              className="rounded-[2.2rem] border border-white/20 bg-white/8 p-7 text-slate-100 backdrop-blur-xl"
+            >
+              <h2 className="text-3xl font-black tracking-[-0.03em]">Welcome</h2>
+              <p className="mt-2 max-w-xl text-base text-slate-300">
+                Please log in to access policies, run the agent, and review execution traces.
+              </p>
+            </m.div>
           ) : (
-            <Routes>
-              <Route path="/" element={dashboard} />
-              <Route path="/allow-list" element={allowListSection} />
-              <Route path="/policies" element={policiesSection} />
-              <Route path="/agent" element={agentSection} />
-              <Route path="/audit" element={auditSection} />
-              <Route path="*" element={dashboard} />
-            </Routes>
+            <AnimatePresence mode="wait">
+              <m.div
+                key={location.pathname}
+                initial={{ opacity: 0, y: 22 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -16 }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              >
+                <Routes location={location}>
+                  <Route path="/" element={dashboard} />
+                  <Route path="/allow-list" element={allowListSection} />
+                  <Route path="/policies" element={showRouteSkeleton ? routeSkeleton : policiesSection} />
+                  <Route path="/agent" element={agentSection} />
+                  <Route path="/audit" element={showRouteSkeleton ? routeSkeleton : auditSection} />
+                  <Route path="/llm-audit" element={showRouteSkeleton ? routeSkeleton : llmAuditSection} />
+                  <Route path="*" element={dashboard} />
+                </Routes>
+              </m.div>
+            </AnimatePresence>
           )}
         </main>
       </div>
-    </div>
+    </LazyMotion>
   );
 }

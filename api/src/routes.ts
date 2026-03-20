@@ -17,6 +17,7 @@ import {
   normalizeAgentSteps,
   trace,
   executeToolWithPolicy,
+  LLM_AUDIT_LOGS,
 } from "./agent/engine";
 import {
   getGithubAccessToken,
@@ -271,7 +272,11 @@ export function registerRoutes(app: Express) {
       .map((r) => r.trim())
       .filter((r) => r.length > 0);
 
-    if (provider === "github" && resourceType === "repo" && normalizedResources.length) {
+    if (
+      provider === "github" &&
+      resourceType === "repo" &&
+      normalizedResources.length
+    ) {
       try {
         const githubToken = await getGithubAccessToken(userId);
         const repos = await githubListRepos(githubToken);
@@ -279,7 +284,9 @@ export function registerRoutes(app: Express) {
 
         for (const repo of repos) {
           const fullName = String(repo.fullName || "").trim();
-          const shortName = String(repo.name || "").trim().toLowerCase();
+          const shortName = String(repo.name || "")
+            .trim()
+            .toLowerCase();
           if (!fullName || !shortName) continue;
           const existing = repoByName.get(shortName) || [];
           existing.push(fullName);
@@ -471,7 +478,11 @@ export function registerRoutes(app: Express) {
     try {
       const tools = await listAllTools();
       const toolIndex = getToolIndex(tools);
-      const plan = await generateAgentPlan(task, context, tools);
+      const plan = await generateAgentPlan(task, context, tools, {
+        userId,
+        runId: run.id,
+        requestId,
+      });
       const missing = getMissingInputQuestion(plan.steps, context, toolIndex);
       if (missing) {
         run.status = "NEEDS_INPUT";
@@ -498,6 +509,13 @@ export function registerRoutes(app: Express) {
         run: formatRunForClient(run),
       });
     }
+  });
+
+  app.get("/llm-audit", async (req, res) => {
+    const userId = (req as any).userId as string;
+    const limit = Math.min(Number(req.query.limit || 50), 200);
+    const logs = LLM_AUDIT_LOGS.get(userId) || [];
+    res.json(logs.slice(0, limit));
   });
 
   app.get("/agent/runs/:id", async (req, res) => {
@@ -572,7 +590,11 @@ export function registerRoutes(app: Express) {
       try {
         const tools = await listAllTools();
         const toolIndex = getToolIndex(tools);
-        const plan = await generateAgentPlan(run.task, run.context, tools);
+        const plan = await generateAgentPlan(run.task, run.context, tools, {
+          userId,
+          runId: run.id,
+          requestId: `${run.id}:replan`,
+        });
         const missing = getMissingInputQuestion(
           plan.steps,
           run.context,
