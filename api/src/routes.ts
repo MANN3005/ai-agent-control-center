@@ -371,9 +371,16 @@ export function registerRoutes(app: Express) {
       body.context && typeof body.context === "object" ? body.context : {};
 
     const previousContext = LAST_CONTEXT.get(userId) || {};
+    // Carry only safe, high-signal defaults between runs to avoid stale fields.
+    const carryContext = {
+      repo: previousContext.repo,
+      repoCandidate: previousContext.repoCandidate,
+      state: previousContext.state,
+      channel: previousContext.channel,
+    };
     const extracted = extractContextFromText(task);
     const context = {
-      ...previousContext,
+      ...carryContext,
       ...incomingContext,
       ...extracted,
     };

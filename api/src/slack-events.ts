@@ -164,8 +164,8 @@ export default function registerSlackEvents(app: Express) {
           const identities = Array.isArray(auth0User?.identities)
             ? auth0User.identities
             : [];
-          const githubIdentity = identities.find(
-            (identity: any) => isGithubIdentity(identity, githubConnection),
+          const githubIdentity = identities.find((identity: any) =>
+            isGithubIdentity(identity, githubConnection),
           );
           const profileLogin =
             githubIdentity?.profileData?.login ||

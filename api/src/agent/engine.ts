@@ -141,7 +141,7 @@ export async function generateAgentPlan(
     "Use github_explorer for listing repos, issues, or PRs. " +
     "Use manage_issues for create/close/reopen/comment actions. " +
     "Use slack_notifier to post or summarize to Slack. " +
-    "If you need to notify an assignee by email, use manage_issues with assigneeEmail and do not add slack_notifier unless the user explicitly asks for a channel post. " +
+    "Only include assigneeEmail when the user explicitly provides a real email address. Never invent, guess, or use placeholder emails (like example.com). " +
     "Never assume a tool call succeeded without output. " +
     "Never use issueNumbers with 0. " +
     "If policy requires CONFIRM or STEP_UP, the system will pause; do not plan around bypassing approvals. " +
@@ -276,6 +276,16 @@ export function normalizeAgentSteps(
           !input.assigneeEmail.includes("@")
         ) {
           delete (input as any).assigneeEmail;
+        }
+        if (typeof input.assigneeEmail === "string") {
+          const normalizedEmail = input.assigneeEmail.trim().toLowerCase();
+          if (
+            normalizedEmail.endsWith("@example.com") ||
+            normalizedEmail.includes("noreply") ||
+            normalizedEmail.includes("placeholder")
+          ) {
+            delete (input as any).assigneeEmail;
+          }
         }
       }
 
