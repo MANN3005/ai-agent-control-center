@@ -3,6 +3,7 @@ import type { Express, Request, Response } from "express";
 import express from "express";
 import {
   findAuth0UserBySlackUserId,
+  getAuth0Connections,
   getGithubAccessToken,
 } from "./services/auth0";
 import {
@@ -49,6 +50,19 @@ function isClaimText(text: string) {
 function extractGithubHandle(text: string) {
   const match = text.match(/@([A-Za-z0-9-]+)/);
   return match ? match[1] : null;
+}
+
+function isGithubIdentity(identity: any, githubConnection: string) {
+  const provider = String(identity?.provider || "").toLowerCase();
+  const connection = String(identity?.connection || "").toLowerCase();
+  const configuredConnection = String(githubConnection || "").toLowerCase();
+  return (
+    provider === "github" ||
+    provider.includes("github") ||
+    connection === configuredConnection ||
+    connection === "github" ||
+    connection.includes("github")
+  );
 }
 
 export default function registerSlackEvents(app: Express) {
@@ -145,14 +159,13 @@ export default function registerSlackEvents(app: Express) {
       let githubLogin: string | null = extractGithubHandle(text);
       if (!githubLogin) {
         try {
+          const { github: githubConnection } = getAuth0Connections();
           const auth0User: any = await findAuth0UserBySlackUserId(slackUserId);
           const identities = Array.isArray(auth0User?.identities)
             ? auth0User.identities
             : [];
           const githubIdentity = identities.find(
-            (identity: any) =>
-              identity?.provider === "github" ||
-              identity?.connection === "github",
+            (identity: any) => isGithubIdentity(identity, githubConnection),
           );
           const profileLogin =
             githubIdentity?.profileData?.login ||
@@ -160,11 +173,13 @@ export default function registerSlackEvents(app: Express) {
           if (profileLogin) {
             githubLogin = profileLogin;
           } else if (githubIdentity?.user_id) {
-            const resolved = await githubGetUserById(
-              accessToken,
-              String(githubIdentity.user_id),
-            );
-            githubLogin = resolved?.login || null;
+            const numericId = String(githubIdentity.user_id).match(/^\d+$/)
+              ? String(githubIdentity.user_id)
+              : null;
+            if (numericId) {
+              const resolved = await githubGetUserById(accessToken, numericId);
+              githubLogin = resolved?.login || null;
+            }
           }
           debug("Auth0 linked github login", githubLogin);
         } catch (err: any) {
