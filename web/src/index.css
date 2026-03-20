@@ -1,52 +1,269 @@
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap");
+@import "tailwindcss";
 
-:root {
-  --bg: #f4f6f9;
-  --bg-2: #eef2f7;
-  --panel: #ffffff;
-  --panel-2: #f7f9fc;
-  --panel-strong: #ffffff;
-  --text: #1b2430;
-  --muted: #5b677a;
-  --accent: #0972d3;
-  --accent-2: #0f4dc2;
-  --line: #d7dde7;
-  --shadow: 0 18px 36px rgba(15, 35, 65, 0.14);
-  --radius-lg: 18px;
-  --radius-md: 12px;
-  --radius-pill: 999px;
-
-  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
-  color: var(--text);
-  background-color: var(--bg);
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-}
-
-* {
-  box-sizing: border-box;
+html,
+body,
+#root {
+	margin: 0;
+	min-height: 100%;
 }
 
 body {
-  margin: 0;
-  min-height: 100vh;
-  background:
-    radial-gradient(900px 420px at 6% -8%, rgba(9, 114, 211, 0.12), transparent 60%),
-    radial-gradient(900px 420px at 92% 0%, rgba(15, 77, 194, 0.12), transparent 60%),
-    radial-gradient(700px 520px at 50% 115%, rgba(245, 130, 32, 0.1), transparent 60%),
-    linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+	background:
+		radial-gradient(56rem 56rem at 0% 0%, rgba(20, 30, 52, 0.5), transparent 60%),
+		radial-gradient(56rem 56rem at 100% 100%, rgba(11, 18, 34, 0.52), transparent 64%),
+		linear-gradient(180deg, #0b0d10 0%, #11161f 100%);
 }
 
-a {
-  color: var(--accent);
-  text-decoration: none;
+:root {
+	--ui-text-xs: clamp(0.82rem, 0.2vw + 0.75rem, 0.9rem);
+	--ui-text-2xs: clamp(0.78rem, 0.15vw + 0.72rem, 0.86rem);
 }
 
-a:hover {
-  color: var(--accent-2);
+.text-xs {
+	font-size: var(--ui-text-xs) !important;
+	line-height: 1.45;
+}
+
+[class*="text-[11px]"] {
+	font-size: var(--ui-text-xs) !important;
+	line-height: 1.45;
+}
+
+[class*="text-[10px]"] {
+	font-size: var(--ui-text-2xs) !important;
+	line-height: 1.4;
+}
+
+@keyframes auroraShift {
+	0% {
+		transform: translate3d(-8%, -4%, 0) scale(1);
+		opacity: 0.55;
+	}
+	50% {
+		transform: translate3d(8%, 5%, 0) scale(1.08);
+		opacity: 0.85;
+	}
+	100% {
+		transform: translate3d(-6%, -5%, 0) scale(1);
+		opacity: 0.6;
+	}
+}
+
+@keyframes scanLine {
+	0% {
+		transform: translateY(-105%);
+		opacity: 0;
+	}
+	15% {
+		opacity: 0.9;
+	}
+	85% {
+		opacity: 0.9;
+	}
+	100% {
+		transform: translateY(105%);
+		opacity: 0;
+	}
+}
+
+@keyframes heartbeat {
+	0%,
+	100% {
+		transform: scale(1);
+		opacity: 0.85;
+	}
+	50% {
+		transform: scale(1.45);
+		opacity: 1;
+	}
+}
+
+@keyframes dashFlow {
+	0% {
+		stroke-dashoffset: 0;
+	}
+	100% {
+		stroke-dashoffset: -12;
+	}
+}
+
+@keyframes dashPackets {
+	0% {
+		stroke-dashoffset: 0;
+	}
+	100% {
+		stroke-dashoffset: -18;
+	}
+}
+
+@keyframes typing {
+	from {
+		max-width: 0;
+	}
+	to {
+		max-width: 100%;
+	}
+}
+
+@keyframes typingClip {
+	from {
+		clip-path: inset(0 100% 0 0);
+	}
+	to {
+		clip-path: inset(0 0 0 0);
+	}
+}
+
+@keyframes streamIn {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes auditRowGlow {
+	0% {
+		background-color: rgba(64, 224, 255, 0.2);
+		box-shadow: inset 0 0 0 1px rgba(64, 224, 255, 0.5);
+	}
+	100% {
+		background-color: transparent;
+		box-shadow: inset 0 0 0 1px rgba(64, 224, 255, 0);
+	}
+}
+
+@keyframes hudAlertPulse {
+	0%,
+	100% {
+		box-shadow: inset 0 0 0 1px rgba(255, 184, 0, 0.5), 0 0 0 rgba(255, 184, 0, 0);
+	}
+	50% {
+		box-shadow: inset 0 0 0 1px rgba(255, 184, 0, 0.85), 0 0 18px rgba(255, 184, 0, 0.35);
+	}
+}
+
+@keyframes hudUnlockFlash {
+	0% {
+		transform: scale(0.85);
+		opacity: 0.65;
+		box-shadow: 0 0 0 rgba(64, 224, 255, 0);
+	}
+	50% {
+		transform: scale(1.1);
+		opacity: 1;
+		box-shadow: 0 0 24px rgba(64, 224, 255, 0.55);
+	}
+	100% {
+		transform: scale(1);
+		opacity: 1;
+		box-shadow: 0 0 0 rgba(64, 224, 255, 0);
+	}
+}
+
+@keyframes hudUnlockGlow {
+	0%,
+	100% {
+		box-shadow: inset 0 0 0 1px rgba(64, 224, 255, 0.42), 0 0 0 rgba(64, 224, 255, 0);
+	}
+	50% {
+		box-shadow: inset 0 0 0 1px rgba(64, 224, 255, 0.8), 0 0 20px rgba(64, 224, 255, 0.3);
+	}
 }
 
 
-#root {
-  width: 100%;
+.audit-row-new {
+	animation: auditRowGlow 2s ease-out both;
+}
+
+.animate-aurora {
+	animation: auroraShift 14s ease-in-out infinite;
+	will-change: transform, opacity;
+}
+
+.animate-scan-line {
+	animation: scanLine 2.4s linear infinite;
+	will-change: transform, opacity;
+}
+
+.glass-panel {
+	border: 1px solid rgba(255, 255, 255, 0.05);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.07),
+		inset 0 0 28px rgba(64, 224, 255, 0.05),
+		0 24px 60px rgba(0, 0, 0, 0.35);
+}
+
+.heartbeat-dot {
+	animation: heartbeat 1.4s ease-in-out infinite;
+}
+
+.orb-active {
+	box-shadow:
+		0 0 15px rgba(64, 224, 255, 0.2),
+		0 0 34px rgba(64, 224, 255, 0.17);
+}
+
+.graph-line {
+	stroke-dasharray: 4 8;
+	stroke-dashoffset: 0;
+	animation: dashFlow 1.2s linear infinite;
+	will-change: stroke-dashoffset;
+}
+
+.graph-line-packets {
+	stroke-dasharray: 1.5 16;
+	stroke-linecap: round;
+	animation: dashPackets 2.1s linear infinite;
+	will-change: stroke-dashoffset;
+}
+
+.hud-alert-pulse {
+	animation: hudAlertPulse 1.5s ease-in-out infinite;
+}
+
+.hud-unlock-flash {
+	animation: hudUnlockFlash 820ms ease-out 1;
+}
+
+.hud-unlock-glow {
+	animation: hudUnlockGlow 1.6s ease-in-out infinite;
+}
+
+.row-glow-track {
+	position: relative;
+}
+
+.row-glow-track::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background: rgba(64, 224, 255, 0.95);
+	transform: scaleY(0);
+	transform-origin: top;
+	transition: transform 220ms ease;
+	box-shadow: 0 0 10px rgba(64, 224, 255, 0.45);
+	pointer-events: none;
+}
+
+.row-glow-track:hover::before {
+	transform: scaleY(1);
+}
+
+/* Increase readable content text sizes across app pages without affecting header or label-sized text-xs. */
+.content-scale .text-sm {
+	font-size: clamp(0.98rem, 0.35vw + 0.88rem, 1.06rem);
+	line-height: 1.6;
+}
+
+.content-scale .text-base {
+	font-size: clamp(1.04rem, 0.4vw + 0.92rem, 1.14rem);
+	line-height: 1.65;
 }
