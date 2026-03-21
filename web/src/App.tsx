@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   AnimatePresence,
   LazyMotion,
@@ -61,12 +61,30 @@ const DEFAULTS: Policy[] = [
 
 const PRIMARY_USER_KEY = "cc_primary_user_id";
 const LINK_PROVIDER_KEY = "cc_link_provider";
+const LINK_PRIMARY_USER_KEY = "cc_link_primary_user_id";
+const STEP_UP_PENDING_KEY = "cc_step_up_pending";
+const STEP_UP_RETURN_TO_KEY = "cc_step_up_return_to";
+const STEP_UP_REQUESTED_AT_KEY = "cc_step_up_requested_at";
+const AGENT_RUN_ID_KEY = "cc_agent_run_id";
 const GITHUB_CONNECTION =
   (import.meta.env.VITE_AUTH0_CONNECTION_GITHUB as string) || "github";
 const SLACK_CONNECTION =
   (import.meta.env.VITE_AUTH0_CONNECTION_SLACK as string) || "slack";
 const GOOGLE_CONNECTION =
   (import.meta.env.VITE_AUTH0_CONNECTION_GOOGLE as string) || "google-oauth2";
+
+function getConnectionForAuth0UserId(userId?: string | null) {
+  if (!userId) return null;
+  const normalized = String(userId).toLowerCase();
+  if (normalized.startsWith("github|")) return GITHUB_CONNECTION;
+  if (normalized.startsWith("google-oauth2|") || normalized.startsWith("google|")) {
+    return GOOGLE_CONNECTION;
+  }
+  if (normalized.startsWith("oauth2|") || normalized.startsWith("slack|")) {
+    return SLACK_CONNECTION;
+  }
+  return null;
+}
 
 function uuid() {
   return crypto.randomUUID();
@@ -90,8 +108,9 @@ const navItems = [
 ] as const;
 
 export default function App() {
-  const { isAuthenticated, user, loginWithRedirect, logout, getAccessTokenSilently } = useAuth0();
+  const { isAuthenticated, isLoading: authLoading, user, loginWithRedirect, logout, getAccessTokenSilently } = useAuth0();
   const location = useLocation();
+  const navigate = useNavigate();
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<Me | null>(null);
@@ -114,17 +133,29 @@ export default function App() {
     if (typeof window === "undefined") return null;
     return window.localStorage.getItem(LINK_PROVIDER_KEY);
   });
+  const [linkPrimaryUserId, setLinkPrimaryUserId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(LINK_PRIMARY_USER_KEY);
+  });
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
   const [policySyncing, setPolicySyncing] = useState(false);
   const [policyToast, setPolicyToast] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [routeSkeletonVisible, setRouteSkeletonVisible] = useState(false);
+  const [stepUpPending, setStepUpPending] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(STEP_UP_PENDING_KEY) === "1";
+  });
 
   const [agentTask, setAgentTask] = useState("");
-  const [agentRunId, setAgentRunId] = useState<string | null>(null);
+  const [agentRunId, setAgentRunId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(AGENT_RUN_ID_KEY);
+  });
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
+  const [autoApprovingStepUp, setAutoApprovingStepUp] = useState(false);
 
   const getApiToken = useCallback(
     () =>
@@ -137,6 +168,9 @@ export default function App() {
   );
 
   const refresh = useCallback(async () => {
+    if (authLoading) {
+      return;
+    }
     if (!isAuthenticated) {
       setLoading(false);
       return;
@@ -165,16 +199,11 @@ export default function App() {
         : [];
       setIdentities(nextIdentities);
       setGithubRepos(Array.isArray(githubReposRes) ? githubReposRes : []);
-      const isGooglePrimary = nextIdentities.some(
-        (identity: IdentityEntry) =>
-          identity?.provider === "google-oauth2" ||
-          identity?.provider === "google" ||
-          identity?.connection === "google" ||
-          identity?.connection === "google-oauth2",
-      );
-      if (isGooglePrimary && (meRes as Me)?.userId && typeof window !== "undefined") {
-        window.localStorage.setItem(PRIMARY_USER_KEY, (meRes as Me).userId);
-        setPrimaryUserId((meRes as Me).userId);
+      const currentUserId = (meRes as Me)?.userId;
+      if (!primaryUserId && currentUserId && typeof window !== "undefined") {
+        // First successful authenticated profile becomes primary, regardless of provider.
+        window.localStorage.setItem(PRIMARY_USER_KEY, currentUserId);
+        setPrimaryUserId(currentUserId);
       }
       if (Array.isArray(policiesRes) && policiesRes.length) {
         const merged = new Map(DEFAULTS.map((p) => [p.toolName, p]));
@@ -188,7 +217,7 @@ export default function App() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [getApiToken, isAuthenticated]);
+  }, [authLoading, getApiToken, isAuthenticated, primaryUserId]);
 
   function storeLinkProvider(provider: string | null) {
     if (typeof window === "undefined") return;
@@ -199,6 +228,67 @@ export default function App() {
     }
     setLinkProvider(provider);
   }
+
+  function storeLinkPrimaryUserId(userId: string | null) {
+    if (typeof window === "undefined") return;
+    if (userId) {
+      window.localStorage.setItem(LINK_PRIMARY_USER_KEY, userId);
+    } else {
+      window.localStorage.removeItem(LINK_PRIMARY_USER_KEY);
+    }
+    setLinkPrimaryUserId(userId);
+  }
+
+  function storeStepUpPending(pending: boolean) {
+    if (typeof window === "undefined") return;
+    if (pending) {
+      window.localStorage.setItem(STEP_UP_PENDING_KEY, "1");
+    } else {
+      window.localStorage.removeItem(STEP_UP_PENDING_KEY);
+    }
+    setStepUpPending(pending);
+  }
+
+  function hasPendingStepUp() {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(STEP_UP_PENDING_KEY) === "1";
+  }
+
+  function storeStepUpReturnTo(returnTo: string | null) {
+    if (typeof window === "undefined") return;
+    if (returnTo) {
+      window.localStorage.setItem(STEP_UP_RETURN_TO_KEY, returnTo);
+    } else {
+      window.localStorage.removeItem(STEP_UP_RETURN_TO_KEY);
+    }
+  }
+
+  function storeStepUpRequestedAtMs(value: number | null) {
+    if (typeof window === "undefined") return;
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      window.localStorage.setItem(STEP_UP_REQUESTED_AT_KEY, String(Math.floor(value)));
+    } else {
+      window.localStorage.removeItem(STEP_UP_REQUESTED_AT_KEY);
+    }
+  }
+
+  function getStepUpRequestedAtMs() {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(STEP_UP_REQUESTED_AT_KEY);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (agentRunId) {
+      window.localStorage.setItem(AGENT_RUN_ID_KEY, agentRunId);
+    } else {
+      window.localStorage.removeItem(AGENT_RUN_ID_KEY);
+    }
+  }, [agentRunId]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -222,11 +312,6 @@ export default function App() {
       const remaining = new Date(stepUpExpiresAt).getTime() - Date.now();
       const nextRemaining = Math.max(0, remaining);
       setStepUpRemainingMs(nextRemaining);
-      if (nextRemaining <= 0) {
-        setStepUpId(null);
-        setStepUpExpiresAt(null);
-        setStepUpRemainingMs(null);
-      }
     }, 1000);
 
     return () => window.clearInterval(intervalId);
@@ -361,23 +446,27 @@ export default function App() {
   }, [policyToast]);
 
   async function doStepUp() {
-    const accessToken = await getApiToken();
-    const r = await startStepUp(accessToken);
-    setStepUpId(r.stepUpId);
-    setStepUpExpiresAt(r.expiresAt || null);
-    if (r.expiresAt) {
-      const remaining = new Date(r.expiresAt).getTime() - Date.now();
-      setStepUpRemainingMs(Math.max(0, remaining));
-    } else {
-      setStepUpRemainingMs(null);
-    }
-    await refresh();
-    return r.stepUpId as string;
+    const returnTo = `${location.pathname}${location.search || ""}`;
+    storeStepUpReturnTo(returnTo || "/agent");
+    storeStepUpRequestedAtMs(Date.now());
+    storeStepUpPending(true);
+    await loginWithRedirect({
+      appState: { returnTo: returnTo || "/agent" },
+      authorizationParams: {
+        redirect_uri: window.location.origin,
+        audience: "https://control-center-api",
+        prompt: "login",
+        max_age: 0,
+        acr_values:
+          "http://schemas.openid.net/pape/policies/2007/06/multi-factor",
+      },
+    });
+    return "pending";
   }
 
   async function approvePendingStep(requireStepUp: boolean) {
     if (!agentRunId) return;
-    if (requireStepUp && !stepUpId) {
+    if (requireStepUp && !stepUpActive) {
       setApprovalError("Start a step-up session before approving high-risk actions.");
       return;
     }
@@ -392,29 +481,33 @@ export default function App() {
       setAgentMessages(run.messages || []);
     }
     setApprovalError(null);
-    if (!stepUpId) {
-      setStepUpRemainingMs(null);
-    }
   }
 
   const linkSecondaryToPrimary = useCallback(
     async (secondaryUserId: string, provider: string) => {
-      if (!primaryUserId) {
-        throw new Error("Primary account is not stored. Log in with Google first.");
+      const targetPrimaryUserId = linkPrimaryUserId || primaryUserId;
+      if (!targetPrimaryUserId) {
+        throw new Error("Primary account is not stored yet. Log in once and retry.");
       }
       const accessToken = await getApiToken();
       return linkIdentity(accessToken, {
-        primaryUserId,
+        primaryUserId: targetPrimaryUserId,
         secondaryUserId,
         provider,
       });
     },
-    [getApiToken, primaryUserId],
+    [getApiToken, linkPrimaryUserId, primaryUserId],
   );
 
   function startLink(provider: "github" | "slack") {
     const connection = provider === "github" ? GITHUB_CONNECTION : SLACK_CONNECTION;
+    const targetPrimaryUserId = primaryUserId || me?.userId || user?.sub || null;
+    if (!targetPrimaryUserId) {
+      setLinkError("Primary account missing. Log in once, then retry linking.");
+      return;
+    }
     setLinkError(null);
+    storeLinkPrimaryUserId(targetPrimaryUserId);
     storeLinkProvider(provider);
     void loginWithRedirect({
       authorizationParams: {
@@ -427,9 +520,20 @@ export default function App() {
   }
 
   async function unlinkIdentityFromDashboard(provider: string, providerUserId: string) {
+    // Unlink action should always cancel any stale cross-provider link session state.
+    storeLinkProvider(null);
+    storeLinkPrimaryUserId(null);
+    setLinking(false);
+    setLinkError(null);
+
     const accessToken = await getApiToken();
     const result = await unlinkIdentity(accessToken, { provider, providerUserId });
     await refresh();
+
+    storeLinkProvider(null);
+    storeLinkPrimaryUserId(null);
+    setLinking(false);
+
     return result;
   }
 
@@ -437,6 +541,11 @@ export default function App() {
   const agentTrace = Array.isArray(agentRun?.trace) ? agentRun.trace : [];
   const pendingApproval = agentSteps.find((step) => step.status === "APPROVAL_REQUIRED");
   const pendingApprovalStatus = pendingApproval?.result?.status || null;
+  const stepUpActive = useMemo(() => {
+    if (!stepUpId) return false;
+    if (stepUpRemainingMs === null) return true;
+    return stepUpRemainingMs > 0;
+  }, [stepUpId, stepUpRemainingMs]);
   const stepUpRemainingText = useMemo(() => {
     if (stepUpRemainingMs === null) return "-";
     const totalSeconds = Math.floor(stepUpRemainingMs / 1000);
@@ -447,9 +556,32 @@ export default function App() {
 
   useEffect(() => {
     const secondaryUserId = user?.sub;
-    if (!isAuthenticated || !linkProvider || !secondaryUserId || !primaryUserId) return;
+    const targetPrimaryUserId = linkPrimaryUserId || primaryUserId;
+    if (!isAuthenticated || !linkProvider || !secondaryUserId || !targetPrimaryUserId) return;
     if (linking) return;
-    if (secondaryUserId === primaryUserId) return;
+    if (secondaryUserId === targetPrimaryUserId) {
+      let active = true;
+      setLinking(true);
+      setLinkError(null);
+
+      (async () => {
+        try {
+          await linkSecondaryToPrimary(secondaryUserId, linkProvider);
+        } catch (err: unknown) {
+          if (!active) return;
+          const message = err instanceof Error ? err.message : "Link failed.";
+          setLinkError(message);
+        } finally {
+          storeLinkProvider(null);
+          storeLinkPrimaryUserId(null);
+          setLinking(false);
+        }
+      })();
+
+      return () => {
+        active = false;
+      };
+    }
 
     let active = true;
     setLinking(true);
@@ -459,12 +591,14 @@ export default function App() {
       try {
         await linkSecondaryToPrimary(secondaryUserId, linkProvider);
         storeLinkProvider(null);
+        storeLinkPrimaryUserId(null);
         if (!active) return;
+        const primaryConnection = getConnectionForAuth0UserId(targetPrimaryUserId);
         await loginWithRedirect({
           authorizationParams: {
             redirect_uri: window.location.origin,
             audience: "https://control-center-api",
-            connection: GOOGLE_CONNECTION,
+            ...(primaryConnection ? { connection: primaryConnection } : {}),
             prompt: "login",
           },
         });
@@ -473,8 +607,11 @@ export default function App() {
         const message = err instanceof Error ? err.message : "Link failed.";
         setLinkError(message);
         storeLinkProvider(null);
+        storeLinkPrimaryUserId(null);
       } finally {
-        if (active) setLinking(false);
+        storeLinkProvider(null);
+        storeLinkPrimaryUserId(null);
+        setLinking(false);
       }
     })();
 
@@ -484,6 +621,7 @@ export default function App() {
   }, [
     isAuthenticated,
     linkProvider,
+    linkPrimaryUserId,
     user?.sub,
     primaryUserId,
     linking,
@@ -492,31 +630,157 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!isAuthenticated || !primaryUserId || !user?.sub) return;
+    const targetPrimaryUserId = linkPrimaryUserId || primaryUserId;
+    if (!isAuthenticated || !targetPrimaryUserId || !user?.sub) return;
     if (linkProvider || linking) return;
-    if (user.sub === primaryUserId) return;
+    if (user.sub === targetPrimaryUserId) {
+      if (linkPrimaryUserId) {
+        storeLinkPrimaryUserId(null);
+      }
+      return;
+    }
 
+    const primaryConnection = getConnectionForAuth0UserId(targetPrimaryUserId);
     void loginWithRedirect({
       authorizationParams: {
         redirect_uri: window.location.origin,
         audience: "https://control-center-api",
-        connection: GOOGLE_CONNECTION,
+        ...(primaryConnection ? { connection: primaryConnection } : {}),
         prompt: "login",
       },
     });
   }, [
     isAuthenticated,
     primaryUserId,
+    linkPrimaryUserId,
     user?.sub,
     linkProvider,
     linking,
     loginWithRedirect,
   ]);
 
-  if (loading) {
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    if (!hasPendingStepUp()) return;
+
+    const stored =
+      typeof window !== "undefined" ? window.localStorage.getItem(STEP_UP_RETURN_TO_KEY) : null;
+    const target = stored && stored.startsWith("/") ? stored : "/agent";
+    const current = `${location.pathname}${location.search || ""}`;
+    if (current !== target) {
+      navigate(target, { replace: true });
+    }
+  }, [authLoading, isAuthenticated, location.pathname, location.search, navigate]);
+
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    if (!hasPendingStepUp()) return;
+
+    let active = true;
+    (async () => {
+      try {
+        const accessToken = await getApiToken();
+        const r = await startStepUp(accessToken, getStepUpRequestedAtMs());
+        if (!active) return;
+        setStepUpId(r.stepUpId);
+        setStepUpExpiresAt(r.expiresAt || null);
+        if (r.expiresAt) {
+          const remaining = new Date(r.expiresAt).getTime() - Date.now();
+          setStepUpRemainingMs(Math.max(0, remaining));
+        } else {
+          setStepUpRemainingMs(null);
+        }
+
+        if (agentRunId && pendingApprovalStatus === "step_up_required") {
+          const continued = await continueAgent(accessToken, {
+            runId: agentRunId,
+            approval: { confirmed: true, stepUpId: r.stepUpId },
+          });
+          if (continued?.run) {
+            const run = continued.run as AgentRun;
+            setAgentRun(run);
+            setAgentMessages(run.messages || []);
+          }
+          setApprovalError(null);
+        }
+
+        await refresh();
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Step-up verification failed.";
+        setApprovalError(message);
+      } finally {
+        storeStepUpPending(false);
+        storeStepUpReturnTo(null);
+        storeStepUpRequestedAtMs(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [authLoading, getApiToken, isAuthenticated, refresh, agentRunId, pendingApprovalStatus]);
+
+  useEffect(() => {
+    if (!isAuthenticated || authLoading) return;
+    if (!agentRunId || !stepUpId) return;
+    if (!stepUpActive) return;
+    if (agentRun?.status !== "WAITING_APPROVAL") return;
+    if (pendingApprovalStatus !== "step_up_required") return;
+    if (autoApprovingStepUp) return;
+
+    let active = true;
+    setAutoApprovingStepUp(true);
+
+    (async () => {
+      try {
+        const accessToken = await getApiToken();
+        const continued = await continueAgent(accessToken, {
+          runId: agentRunId,
+          approval: { confirmed: true, stepUpId },
+        });
+        if (!active) return;
+        if (continued?.run) {
+          const run = continued.run as AgentRun;
+          setAgentRun(run);
+          setAgentMessages(run.messages || []);
+        }
+        setApprovalError(null);
+      } catch (err: unknown) {
+        if (!active) return;
+        const message =
+          err instanceof Error ? err.message : "Step-up approval failed. Please retry.";
+        setApprovalError(message);
+      } finally {
+        if (active) {
+          setAutoApprovingStepUp(false);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [
+    isAuthenticated,
+    authLoading,
+    agentRunId,
+    stepUpId,
+    stepUpActive,
+    agentRun?.status,
+    pendingApprovalStatus,
+    autoApprovingStepUp,
+    getApiToken,
+  ]);
+
+  const showAuthTransitionGate =
+    loading ||
+    authLoading ||
+    (!isAuthenticated && (Boolean(linkProvider) || stepUpPending));
+
+  if (showAuthTransitionGate) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-900 text-slate-200">
-        Loading...
+        Restoring secure session...
       </div>
     );
   }
@@ -548,7 +812,7 @@ export default function App() {
       allowedReposCount={allowedReposText ? allowedReposText.split("\n").filter(Boolean).length : 0}
       policiesCount={policies.length}
       auditCount={audit.length}
-      stepUpActive={Boolean(stepUpId)}
+      stepUpActive={stepUpActive}
       identities={identities}
       userId={me?.userId}
       primaryUserId={primaryUserId}
@@ -575,9 +839,10 @@ export default function App() {
       onApprove={() => approvePendingStep(true)}
       onAllowListRepo={addAllowListedRepo}
       stepUpInfo={{
-        active: Boolean(stepUpId),
+        active: stepUpActive,
         expiresAt: stepUpExpiresAt,
         remainingText: stepUpRemainingText,
+        pending: stepUpPending,
       }}
       onStartStepUp={doStepUp}
     />
@@ -616,7 +881,9 @@ export default function App() {
   );
 
   const agentStatusLabel =
-    stepUpId || agentRun?.status === "RUNNING" || agentRun?.status === "WAITING_APPROVAL"
+    agentRun?.status === "RUNNING" ||
+    agentRun?.status === "WAITING_APPROVAL" ||
+    agentRun?.status === "NEEDS_INPUT"
       ? "PROCESSING"
       : "STANDBY";
   const identityLabel = user?.email ?? user?.name ?? user?.sub ?? "Account";
@@ -659,6 +926,19 @@ export default function App() {
               className="fixed bottom-5 right-5 z-70 rounded-xl border border-cyan-300/35 bg-[#0f141f]/90 px-4 py-3 font-mono text-sm text-cyan-100 shadow-[0_0_24px_rgba(64,224,255,0.25)]"
             >
               {policyToast}
+            </m.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {stepUpPending && isAuthenticated ? (
+            <m.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              className="fixed bottom-20 right-5 z-70 rounded-xl border border-amber-300/35 bg-[#15110a]/90 px-4 py-3 font-mono text-sm text-amber-100 shadow-[0_0_24px_rgba(255,184,0,0.2)]"
+            >
+              [SECURITY]: Step-up in progress. Complete Auth0 verification.
             </m.div>
           ) : null}
         </AnimatePresence>

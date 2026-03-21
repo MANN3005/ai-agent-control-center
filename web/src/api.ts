@@ -74,11 +74,25 @@ export async function putAllowedRepos(accessToken: string, repos: string[]) {
 }
 
 // ----- step-up -----
-export async function startStepUp(accessToken: string) {
+export async function startStepUp(accessToken: string, requestedAtMs?: number | null) {
   const res = await authedFetch("/step-up/start", accessToken, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      typeof requestedAtMs === "number" && Number.isFinite(requestedAtMs)
+        ? { requestedAtMs }
+        : {},
+    ),
   });
-  return res.json();
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const reason =
+      payload && typeof payload.reason === "string"
+        ? payload.reason
+        : "Step-up verification failed.";
+    throw new Error(reason);
+  }
+  return payload;
 }
 
 // ----- tool execute -----

@@ -175,3 +175,34 @@ export function getAuth0Connections() {
     slack: AUTH0_SLACK_CONNECTION,
   };
 }
+
+export async function resolveCanonicalAuth0UserId(
+  userId: string,
+  email?: string | null,
+) {
+  const client = getAuth0ManagementClient();
+
+  try {
+    const userResponse: any = await client.users.get({ id: userId });
+    const user = userResponse?.data ?? userResponse;
+    const resolved = String(user?.user_id || userId);
+    return resolved;
+  } catch (err: any) {
+    const statusCode = Number(err?.statusCode || err?.status || 0);
+    const notFound =
+      statusCode === 404 ||
+      String(err?.message || "").toLowerCase().includes("user not found");
+    if (!notFound) {
+      throw err;
+    }
+  }
+
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (!normalizedEmail) {
+    return userId;
+  }
+
+  const fallbackUser = await findAuth0UserByEmail(normalizedEmail);
+  const fallbackId = String((fallbackUser as any)?.user_id || "").trim();
+  return fallbackId || userId;
+}

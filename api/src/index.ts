@@ -6,6 +6,7 @@ import { auth } from "express-oauth2-jwt-bearer";
 import { corsOrigin } from "./config";
 import { registerRoutes } from "./routes";
 import registerSlackEvents from "./slack-events";
+import { resolveCanonicalAuth0UserId } from "./services/auth0";
 
 const app = express();
 
@@ -45,9 +46,26 @@ const checkJwt = auth({
 
 app.use(checkJwt);
 
-app.use((req, _res, next) => {
+app.use(async (req, _res, next) => {
   const r = req as any;
-  r.userId = r.auth?.payload?.sub;
+  const sub = String(r.auth?.payload?.sub || "").trim();
+  const emailClaim = r.auth?.payload?.email;
+  const email = typeof emailClaim === "string" ? emailClaim : null;
+  r.userEmail = email;
+
+  if (!sub) {
+    r.userId = null;
+    next();
+    return;
+  }
+
+  try {
+    r.userId = await resolveCanonicalAuth0UserId(sub, email);
+  } catch {
+    // Fall back to token subject if management lookup fails.
+    r.userId = sub;
+  }
+
   next();
 });
 

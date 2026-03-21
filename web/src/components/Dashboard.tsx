@@ -329,7 +329,7 @@ export default function Dashboard({
               </div>
               {!canManageLinks ? (
                 <div className="rounded-xl border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
-                  Log in with your primary Google account to manage links.
+                  Log in with your primary account session to manage links.
                 </div>
               ) : null}
             </div>
