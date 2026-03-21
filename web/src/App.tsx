@@ -13,7 +13,9 @@ import {
   Eye,
   GitBranch,
   Home,
+  Link2,
   ListChecks,
+  ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import {
@@ -619,6 +621,13 @@ export default function App() {
       : "STANDBY";
   const identityLabel = user?.email ?? user?.name ?? user?.sub ?? "Account";
   const identityInitial = identityLabel.charAt(0).toUpperCase();
+  const startLogin = () =>
+    loginWithRedirect({
+      authorizationParams: {
+        redirect_uri: window.location.origin,
+        audience: "https://control-center-api",
+      },
+    });
 
   return (
     <LazyMotion features={domAnimation}>
@@ -681,12 +690,22 @@ export default function App() {
         <m.header
           className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-3 py-3 backdrop-blur-xl md:px-6 lg:px-8 xl:px-10 2xl:px-12"
         >
-          <div className="grid w-full grid-cols-1 items-center gap-3 lg:grid-cols-[minmax(280px,1fr)_auto_minmax(320px,1fr)]">
+          <div
+            className={`grid w-full grid-cols-1 items-center gap-3 ${
+              isAuthenticated
+                ? "lg:grid-cols-[minmax(280px,1fr)_auto_minmax(320px,1fr)]"
+                : "lg:grid-cols-[minmax(280px,1fr)_auto]"
+            }`}
+          >
             <m.div className="min-w-0 lg:justify-self-start">
               <div className="text-[11px] uppercase tracking-[0.2em] text-fuchsia-200/85">
                 From prompt to action, safely.
               </div>
-              <h1 className="mt-1 max-w-[12ch] bg-linear-to-r from-white via-slate-100 to-slate-400 bg-clip-text font-['Syne',sans-serif] text-4xl leading-[0.92] font-extrabold tracking-[-0.035em] text-transparent [text-shadow:0_0_18px_rgba(255,255,255,0.14)] md:text-5xl lg:text-4xl xl:text-5xl">
+              <h1
+                className={`mt-1 max-w-[12ch] bg-linear-to-r from-white via-slate-100 to-slate-400 bg-clip-text font-['Syne',sans-serif] text-4xl leading-[0.92] font-extrabold tracking-[-0.035em] text-transparent [text-shadow:0_0_18px_rgba(255,255,255,0.14)] md:text-5xl lg:text-4xl xl:text-5xl ${
+                  isAuthenticated ? "opacity-100" : "opacity-80"
+                }`}
+              >
                 FlowSnap Control Plane
               </h1>
               <div className="mt-1 inline-flex items-center gap-2 text-[13px] font-medium text-cyan-100/75">
@@ -695,17 +714,19 @@ export default function App() {
               </div>
             </m.div>
 
-            <nav className="flex flex-wrap items-center justify-start gap-2 overflow-x-auto md:flex-nowrap lg:justify-center">
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <NavLink key={item.to} to={item.to} className={navClassName}>
-                    <Icon className="h-3.5 w-3.5" />
-                    {item.label}
-                  </NavLink>
-                );
-              })}
-            </nav>
+            {isAuthenticated ? (
+              <nav className="flex flex-wrap items-center justify-start gap-2 overflow-x-auto md:flex-nowrap lg:justify-center">
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <NavLink key={item.to} to={item.to} className={navClassName}>
+                      <Icon className="h-3.5 w-3.5" />
+                      {item.label}
+                    </NavLink>
+                  );
+                })}
+              </nav>
+            ) : null}
 
             <div className="flex flex-col items-end gap-2 lg:justify-self-end">
               {!isAuthenticated ? (
@@ -714,15 +735,8 @@ export default function App() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                  onClick={() =>
-                    loginWithRedirect({
-                      authorizationParams: {
-                        redirect_uri: window.location.origin,
-                        audience: "https://control-center-api",
-                      },
-                    })
-                  }
-                  className="rounded-full border-2 border-black bg-cyan-300 px-5 py-2 text-sm font-bold text-black shadow-[4px_4px_0px_rgba(0,0,0,0.95)]"
+                  onClick={startLogin}
+                  className="rounded-full border border-cyan-300/60 bg-cyan-300/10 px-5 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/16"
                 >
                   Log in
                 </m.button>
@@ -761,17 +775,128 @@ export default function App() {
 
         <main className="content-scale grid w-full gap-6 px-3 py-6 md:px-6 lg:px-8 lg:py-8 xl:px-10 2xl:px-12">
           {!isAuthenticated ? (
-            <m.div
+            <m.section
               initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="rounded-[2.2rem] border border-white/20 bg-white/8 p-7 text-slate-100 backdrop-blur-xl"
+              className="relative isolate grid min-h-[calc(100vh-11rem)] place-items-center overflow-hidden rounded-[2.2rem] border border-white/15 bg-white/6 p-6 text-slate-100 backdrop-blur-xl md:p-9"
             >
-              <h2 className="text-3xl font-black tracking-[-0.03em]">Welcome</h2>
-              <p className="mt-2 max-w-xl text-base text-slate-300">
-                Please log in to access policies, run the agent, and review execution traces.
-              </p>
-            </m.div>
+              <div className="pointer-events-none absolute inset-0 opacity-86 md:opacity-95">
+                <m.div
+                  className="absolute inset-x-5 top-5 h-[56%] overflow-hidden rounded-4xl border border-cyan-300/22 bg-[#0d1522]/78 shadow-[0_14px_60px_rgba(0,0,0,0.45)]"
+                  animate={{ opacity: [0.9, 0.95, 0.9] }}
+                  transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
+                >
+                  <div className="absolute inset-x-0 top-0 h-12 border-b border-white/8 bg-black/30" />
+                  <div className="absolute left-4 top-3 h-5 w-30 rounded-full border border-cyan-300/25 bg-cyan-300/12" />
+                  <div className="absolute right-4 top-3 h-5 w-24 rounded-full border border-white/15 bg-white/7" />
+
+                  <div className="absolute inset-x-5 top-18 grid grid-cols-[1.45fr_0.85fr] gap-4">
+                    <div className="rounded-3xl border border-white/10 bg-[#101b2b]/72 p-4">
+                      <div className="h-6 w-52 rounded-full border border-cyan-300/20 bg-cyan-300/10" />
+                      <div className="mt-3 h-3 w-[88%] rounded bg-white/10" />
+                      <div className="mt-2 h-3 w-[76%] rounded bg-white/8" />
+                      <div className="mt-5 h-28 rounded-2xl border border-cyan-300/20 bg-black/35 p-3">
+                        <div className="relative h-full w-full">
+                          <svg viewBox="0 0 100 44" className="absolute inset-0 h-full w-full" aria-hidden="true">
+                            <line x1="16" y1="31" x2="47" y2="22" stroke="rgba(64,224,255,0.55)" strokeDasharray="3 5" />
+                            <line x1="47" y1="22" x2="82" y2="19" stroke="rgba(64,224,255,0.55)" strokeDasharray="3 5" />
+                          </svg>
+                          <div className="absolute left-[12%] top-[58%] h-7 w-7 rounded-full border border-white/25 bg-white/10" />
+                          <div className="absolute left-[43%] top-[40%] h-9 w-9 rounded-full border border-cyan-300/45 bg-cyan-300/18" />
+                          <div className="absolute left-[76%] top-[30%] h-7 w-7 rounded-full border border-white/25 bg-white/10" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3">
+                      <div className="h-16 rounded-2xl border border-white/10 bg-black/30" />
+                      <div className="h-16 rounded-2xl border border-white/10 bg-black/30" />
+                      <div className="h-16 rounded-2xl border border-white/10 bg-black/30" />
+                    </div>
+                  </div>
+
+                  <div className="absolute inset-x-5 bottom-5 grid grid-cols-2 gap-4">
+                    <div className="h-18 rounded-2xl border border-white/10 bg-black/30" />
+                    <div className="h-18 rounded-2xl border border-cyan-300/18 bg-cyan-950/20" />
+                  </div>
+
+                  <div className="absolute inset-0 bg-linear-to-b from-transparent via-transparent to-black/55" />
+                  <div className="absolute right-5 top-14 rounded-full border border-amber-300/35 bg-amber-300/12 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.11em] text-amber-100">
+                    Locked Preview
+                  </div>
+                </m.div>
+
+                <div className="absolute inset-0 backdrop-blur-md md:backdrop-blur-[10px] mask-[radial-gradient(ellipse_at_center,transparent_30%,black_95%)]" />
+              </div>
+
+              <div className="pointer-events-none absolute inset-0">
+                <div className="absolute left-[18%] top-[35%] h-72 w-72 rounded-full bg-cyan-500/10 blur-[120px]" />
+                <div className="absolute right-[18%] top-[40%] h-72 w-72 rounded-full bg-indigo-500/12 blur-[120px]" />
+              </div>
+
+              <div className="relative z-10 mx-auto w-full max-w-4xl">
+                <div className="rounded-4xl border border-white/20 bg-[#0f1623]/72 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-9">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-300/12 px-3 py-1 text-xs uppercase tracking-[0.15em] text-cyan-100">
+                    Private Control Plane
+                  </div>
+                  <h2 className="mt-4 max-w-3xl text-4xl font-black tracking-[-0.03em] text-white md:text-6xl md:leading-[1.02]">
+                    The Secure Control Plane for Autonomous Agents.
+                  </h2>
+                  <p className="mt-4 max-w-2xl text-base text-slate-200 md:text-lg">
+                    Link identities, govern tool permissions, and inspect every agent decision before action reaches production.
+                  </p>
+
+                  <m.button
+                    type="button"
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    animate={{ scale: [1, 1.02, 1] }}
+                    transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                    onClick={startLogin}
+                    className="mt-6 inline-flex items-center gap-2 rounded-full border border-cyan-200/50 bg-cyan-300 px-7 py-3 text-base font-black text-black shadow-[0_0_20px_rgba(6,182,212,0.3)]"
+                  >
+                    Enter Control Plane
+                  </m.button>
+
+                  <div className="mt-6 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
+                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-cyan-100">
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-cyan-300/12 shadow-[0_0_10px_rgba(34,211,238,0.35)]">
+                          <Link2 className="h-3.5 w-3.5 text-cyan-300" />
+                        </span>
+                        Identity
+                      </div>
+                      <p className="mt-2 text-xs text-slate-300">
+                        Link GitHub and Slack through the Auth0 Token Vault.
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
+                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-amber-100">
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-300/12 shadow-[0_0_10px_rgba(251,191,36,0.35)]">
+                          <ShieldCheck className="h-3.5 w-3.5 text-amber-300" />
+                        </span>
+                        Governance
+                      </div>
+                      <p className="mt-2 text-xs text-slate-300">
+                        Apply fine-grained tool policies with explicit risk gates.
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
+                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-emerald-100">
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-300/12 shadow-[0_0_10px_rgba(52,211,153,0.35)]">
+                          <Eye className="h-3.5 w-3.5 text-emerald-300" />
+                        </span>
+                        Observability
+                      </div>
+                      <p className="mt-2 text-xs text-slate-300">
+                        Review full LLM traces and policy audit logs in one timeline.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </m.section>
           ) : (
             <AnimatePresence mode="wait">
               <m.div
