@@ -175,6 +175,7 @@ export async function generateAgentPlan(
     "Use github_explorer for listing repos, issues, or PRs. " +
     "Use manage_issues for create/close/reopen/comment actions. " +
     "Use slack_notifier to post or summarize to Slack. " +
+    "Do not use slack_notifier unless the user explicitly asks to post/send/share in Slack or provides a Slack channel (like #general). " +
     "Only include assigneeEmail when the user explicitly provides a real email address. Never invent, guess, or use placeholder emails (like example.com). " +
     "Never assume a tool call succeeded without output. " +
     "Never use issueNumbers with 0. " +
@@ -223,6 +224,23 @@ export async function generateAgentPlan(
     steps: parsed.steps as AgentStep[],
     question: typeof parsed.question === "string" ? parsed.question.trim() : "",
   };
+}
+
+function taskRequestsSlackDelivery(task: string) {
+  const normalized = task.toLowerCase();
+  return (
+    /\bslack\b/.test(normalized) ||
+    /#[a-z0-9_-]+/.test(normalized) ||
+    /\bchannel\b/.test(normalized) ||
+    /\b(post|send|share|notify)\b/.test(normalized)
+  );
+}
+
+export function applyTaskIntentGuards(task: string, steps: AgentStep[]) {
+  if (taskRequestsSlackDelivery(task)) {
+    return steps;
+  }
+  return steps.filter((step) => String(step?.tool || "").toLowerCase() !== "slack_notifier");
 }
 
 export function normalizeAgentSteps(
@@ -723,7 +741,9 @@ export async function runAgentLoop(runId: string) {
           step.input.text = buildGithubSummary(repos, 10);
         } else if (Array.isArray(issues) && issues.length) {
           const stateLabel = String(previous?.input?.state || "open");
-          step.input.text = buildIssuesSummary(issues, 10, stateLabel);
+          const limit = Number(step.input?.limit || 10);
+          const repo = String(previous?.input?.repo || run.context.repo || "");
+          step.input.text = buildIssuesSummary(issues, limit, stateLabel, repo || undefined);
         } else if (run.context.repo && run.context.issueNumber) {
           const accessToken = await getGithubAccessToken(run.userId);
           const { owner, name } = parseRepo(String(run.context.repo));
@@ -1551,6 +1571,8 @@ export async function applySlackAutoFill(run: AgentRun, stepIndex: number) {
   }
   if (Array.isArray(issues) && issues.length) {
     const stateLabel = String(previous?.input?.state || "open");
-    step.input.text = buildIssuesSummary(issues, 10, stateLabel);
+    const limit = Number(step.input?.limit || 10);
+    const repo = String(previous?.input?.repo || run.context.repo || "");
+    step.input.text = buildIssuesSummary(issues, limit, stateLabel, repo || undefined);
   }
 }

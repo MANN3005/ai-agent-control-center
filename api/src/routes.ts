@@ -6,6 +6,7 @@ import {
   AGENT_RUNS,
   LAST_CONTEXT,
   applySlackAutoFill,
+  applyTaskIntentGuards,
   createRunId,
   enqueueAgentRun,
   extractContextFromText,
@@ -522,17 +523,8 @@ export function registerRoutes(app: Express) {
     const incomingContext =
       body.context && typeof body.context === "object" ? body.context : {};
 
-    const previousContext = LAST_CONTEXT.get(userId) || {};
-    // Carry only safe, high-signal defaults between runs to avoid stale fields.
-    const carryContext = {
-      repo: previousContext.repo,
-      repoCandidate: previousContext.repoCandidate,
-      state: previousContext.state,
-      channel: previousContext.channel,
-    };
     const extracted = extractContextFromText(task);
     const context = {
-      ...carryContext,
       ...incomingContext,
       ...extracted,
     };
@@ -595,16 +587,17 @@ export function registerRoutes(app: Express) {
         runId: run.id,
         requestId,
       });
-      const missing = getMissingInputQuestion(plan.steps, context, toolIndex);
+      const guardedSteps = applyTaskIntentGuards(task, plan.steps);
+      const missing = getMissingInputQuestion(guardedSteps, context, toolIndex);
       if (missing) {
         run.status = "NEEDS_INPUT";
-        run.plan = plan.steps;
+        run.plan = guardedSteps;
         trace(run, "status", "Waiting for user input");
         run.messages.push({ role: "agent", text: missing });
         return res.json({ status: "started", run: formatRunForClient(run) });
       }
 
-      run.plan = normalizeAgentSteps(plan.steps, context, toolIndex);
+      run.plan = normalizeAgentSteps(guardedSteps, context, toolIndex);
       run.status = "RUNNING";
       trace(run, "thought", "Plan ready, executing");
       enqueueAgentRun(run.id);
@@ -707,19 +700,20 @@ export function registerRoutes(app: Express) {
           runId: run.id,
           requestId: `${run.id}:replan`,
         });
+        const guardedSteps = applyTaskIntentGuards(run.task, plan.steps);
         const missing = getMissingInputQuestion(
-          plan.steps,
+          guardedSteps,
           run.context,
           toolIndex,
         );
         if (missing) {
           run.status = "NEEDS_INPUT";
-          run.plan = plan.steps;
+          run.plan = guardedSteps;
           run.messages.push({ role: "agent", text: missing });
           return res.json({ status: "ok", run: formatRunForClient(run) });
         }
 
-        run.plan = normalizeAgentSteps(plan.steps, run.context, toolIndex);
+        run.plan = normalizeAgentSteps(guardedSteps, run.context, toolIndex);
         run.steps = [];
         run.currentStep = 0;
         run.pendingStepIndex = null;

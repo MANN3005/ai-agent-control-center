@@ -2,6 +2,7 @@ import { AnimatePresence, LayoutGroup, m } from "framer-motion";
 import { useMemo, useState } from "react";
 import {
   Activity,
+  EllipsisVertical,
   Link2,
   Orbit,
   ShieldCheck,
@@ -9,8 +10,11 @@ import {
   Boxes,
   FileCheck,
   Sparkles,
+  X,
 } from "lucide-react";
 import type { IdentityEntry } from "../types";
+
+const DASHBOARD_OVERVIEW_DISMISSED_KEY = "cc_dashboard_overview_dismissed";
 
 type DashboardProps = {
   allowedReposCount: number;
@@ -46,6 +50,17 @@ export default function Dashboard({
   const [unlinkError, setUnlinkError] = useState<string | null>(null);
   const [focusedIdentity, setFocusedIdentity] = useState<IdentityEntry | null>(null);
   const [focusedIdentityKey, setFocusedIdentityKey] = useState<string | null>(null);
+  const [showOverview, setShowOverview] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(DASHBOARD_OVERVIEW_DISMISSED_KEY) !== "1";
+  });
+
+  function dismissOverview() {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(DASHBOARD_OVERVIEW_DISMISSED_KEY, "1");
+    }
+    setShowOverview(false);
+  }
 
   async function handleUnlink(
     provider: string | null,
@@ -139,6 +154,42 @@ export default function Dashboard({
   return (
     <LayoutGroup>
       <div className="grid gap-5 lg:grid-cols-3">
+        <AnimatePresence>
+          {showOverview ? (
+            <m.section
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              className="glass-panel relative overflow-hidden rounded-3xl border border-cyan-300/30 bg-[#10202c]/80 p-5 backdrop-blur-xl lg:col-span-3"
+            >
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_10%_10%,rgba(64,224,255,0.18),transparent_42%),radial-gradient(circle_at_90%_80%,rgba(255,184,0,0.14),transparent_46%)]" />
+              <button
+                type="button"
+                onClick={dismissOverview}
+                className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-white/5 text-slate-300 transition hover:bg-white/10 hover:text-white"
+                aria-label="Dismiss system overview"
+              >
+                <X className="h-4 w-4" />
+              </button>
+              <div className="relative pr-10">
+                <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/45 bg-cyan-300/12 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-cyan-100">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  System Overview
+                </div>
+                <h3 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-white md:text-3xl">
+                  Your AI Safety Layer.
+                </h3>
+                <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-200/95">
+                  FlowSnap bridges your GitHub and Slack identities via Auth0. It enforces
+                  the security policies you set below, ensuring your AI Agent only accesses
+                  approved data and asks for permission (Step-Up) during high-risk actions.
+                </p>
+              </div>
+            </m.section>
+          ) : null}
+        </AnimatePresence>
+
         <m.section
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -287,9 +338,14 @@ export default function Dashboard({
                 const providerLabel = resolveIdentityLabel(node.identity);
                 const key = `${providerLabel}-${idx}`;
                 const posStyle = { left: `${node.x}%`, top: `${node.y}%` };
+                const isActiveConnection = Boolean(node.identity.hasAccessToken);
 
                 return (
-                  <div key={key}>
+                  <div
+                    key={key}
+                    className="group absolute z-20 -translate-x-1/2 -translate-y-1/2"
+                    style={posStyle}
+                  >
                     <m.button
                       layoutId={`identity-${key}`}
                       type="button"
@@ -298,16 +354,26 @@ export default function Dashboard({
                         setFocusedIdentityKey(key);
                       }}
                       whileHover={{ scale: 1.06 }}
-                      className={`absolute z-20 flex h-18 w-18 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-white/20 bg-white/10 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-100 backdrop-blur-xl ${
-                        node.identity.hasAccessToken ? "orb-active" : ""
+                      className={`relative flex h-18 w-18 cursor-pointer flex-col items-center justify-center rounded-full border border-white/20 bg-white/10 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-100 backdrop-blur-xl transition-transform duration-200 hover:scale-105 ${
+                        isActiveConnection ? "orb-active" : ""
                       }`}
-                      style={posStyle}
                     >
+                      {isActiveConnection ? (
+                        <span className="absolute right-1.5 top-1.5 inline-flex h-4.5 w-4.5 items-center justify-center rounded-full border border-cyan-300/50 bg-cyan-300/20 text-cyan-100">
+                          <EllipsisVertical className="h-2.5 w-2.5" />
+                        </span>
+                      ) : null}
                       <span>{providerLabel}</span>
                       <span className="text-[10px] text-slate-300">
-                        {node.identity.hasAccessToken ? "active" : "missing"}
+                        {isActiveConnection ? "active" : "missing"}
                       </span>
                     </m.button>
+
+                    {isActiveConnection ? (
+                      <div className="pointer-events-none absolute left-1/2 top-[calc(100%+0.45rem)] z-30 w-52 -translate-x-1/2 rounded-xl border border-cyan-300/35 bg-[#0f1724]/95 px-3 py-2 text-center text-[11px] font-medium leading-4 text-cyan-100 opacity-0 shadow-[0_0_20px_rgba(64,224,255,0.24)] transition-opacity duration-180 group-hover:opacity-100">
+                        Active Connection: Click to manage or unlink
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

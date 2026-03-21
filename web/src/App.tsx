@@ -383,6 +383,18 @@ export default function App() {
     }
 
     if (agentRun?.status === "WAITING_APPROVAL") {
+      const r = await runAgent(accessToken, {
+        requestId: uuid(),
+        task: message,
+        context: {},
+      });
+      if (r?.run) {
+        const run = r.run as AgentRun;
+        setAgentRunId(run.id);
+        setAgentRun(run);
+        setAgentMessages(run.messages || []);
+      }
+      setApprovalError(null);
       setAgentTask("");
       return;
     }
