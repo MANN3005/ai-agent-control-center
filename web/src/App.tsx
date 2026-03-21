@@ -177,15 +177,13 @@ export default function App() {
     setRefreshing(true);
     try {
       const accessToken = await getApiToken();
-      setLoadingGithubRepos(true);
-      const [meRes, policiesRes, allowedRes, auditRes, llmAuditRes, identitiesRes, githubReposRes] = await Promise.all([
+      const [meRes, policiesRes, allowedRes, auditRes, llmAuditRes, identitiesRes] = await Promise.all([
         getMe(accessToken),
         getPolicies(accessToken),
         getAllowedRepos(accessToken),
         getAudit(accessToken, 25),
         getLlmAudit(accessToken, 25),
         getIdentities(accessToken),
-        listAccessibleGithubRepos(accessToken).catch(() => []),
       ]);
 
       setMe(meRes as Me);
@@ -196,7 +194,20 @@ export default function App() {
         ? (identitiesRes.identities as IdentityEntry[])
         : [];
       setIdentities(nextIdentities);
-      setGithubRepos(Array.isArray(githubReposRes) ? githubReposRes : []);
+
+      // Keep core refresh fast: populate GitHub repos asynchronously.
+      setLoadingGithubRepos(true);
+      void listAccessibleGithubRepos(accessToken)
+        .then((repos) => {
+          setGithubRepos(Array.isArray(repos) ? repos : []);
+        })
+        .catch(() => {
+          setGithubRepos([]);
+        })
+        .finally(() => {
+          setLoadingGithubRepos(false);
+        });
+
       const currentUserId = (meRes as Me)?.userId;
       if (!primaryUserId && currentUserId && typeof window !== "undefined") {
         // First successful authenticated profile becomes primary, regardless of provider.
@@ -211,7 +222,6 @@ export default function App() {
         setPolicies(DEFAULTS);
       }
     } finally {
-      setLoadingGithubRepos(false);
       setRefreshing(false);
     }
   }, [authLoading, getApiToken, isAuthenticated, primaryUserId]);
@@ -627,7 +637,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    const targetPrimaryUserId = linkPrimaryUserId || primaryUserId;
+    const targetPrimaryUserId = linkPrimaryUserId;
     if (!isAuthenticated || !targetPrimaryUserId || !user?.sub) return;
     if (linkProvider || linking) return;
     if (user.sub === targetPrimaryUserId) {
@@ -648,7 +658,6 @@ export default function App() {
     });
   }, [
     isAuthenticated,
-    primaryUserId,
     linkPrimaryUserId,
     user?.sub,
     linkProvider,
