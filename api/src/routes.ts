@@ -31,7 +31,7 @@ import { getToolIndex, listAllTools } from "./tools";
 
 const LinkAccountBody = z.object({
   primaryUserId: z.string().min(1),
-  secondaryUserId: z.string().min(1),
+  secondaryUserId: z.string().min(1).optional(),
   provider: z.enum(["github", "slack", "google", "google-oauth2"]).optional(),
 });
 
@@ -57,6 +57,78 @@ const PutAllowedBody = z.object({
   resourceType: z.string().min(1),
   resources: z.array(z.string().min(1)),
 });
+
+const StepUpStartBody = z
+  .object({
+    requestedAtMs: z.number().finite().positive().optional(),
+  })
+  .optional();
+
+function identityMatchesProvider(
+  identity: any,
+  provider: "github" | "slack" | "google" | "google-oauth2" | undefined,
+  connections: { github: string; google: string; slack: string },
+) {
+  if (!provider) return true;
+  const idProvider = String(identity?.provider || "").toLowerCase();
+  const idConnection = String(identity?.connection || "").toLowerCase();
+  if (provider === "github") {
+    return (
+      idProvider === "github" ||
+      idConnection === String(connections.github || "").toLowerCase() ||
+      idConnection === "github"
+    );
+  }
+  if (provider === "slack") {
+    return (
+      idProvider === "slack" ||
+      (idProvider === "oauth2" && idConnection.includes("slack")) ||
+      idConnection === String(connections.slack || "").toLowerCase() ||
+      idConnection.includes("slack")
+    );
+  }
+  return (
+    idProvider === "google-oauth2" ||
+    idProvider === "google" ||
+    idConnection === String(connections.google || "").toLowerCase() ||
+    idConnection === "google-oauth2" ||
+    idConnection === "google"
+  );
+}
+
+function hasMfaEvidence(payload: any) {
+  const amrRaw = payload?.amr;
+  const acrRaw = payload?.acr;
+
+  const amr = Array.isArray(amrRaw)
+    ? amrRaw.map((v) => String(v).toLowerCase())
+    : typeof amrRaw === "string"
+      ? [amrRaw.toLowerCase()]
+      : [];
+  const acr = typeof acrRaw === "string" ? acrRaw.toLowerCase() : "";
+
+  if (amr.includes("mfa")) return true;
+  if (amr.some((value) => ["otp", "totp", "webauthn", "sms", "push"].includes(value))) {
+    return true;
+  }
+  if (acr.includes("multi-factor") || acr.includes("mfa")) return true;
+
+  return false;
+}
+
+function hasFreshReauth(payload: any, requestedAtMs?: number) {
+  if (typeof requestedAtMs !== "number" || !Number.isFinite(requestedAtMs)) {
+    return false;
+  }
+  const iatRaw = payload?.iat;
+  const iatSeconds = typeof iatRaw === "number" ? iatRaw : Number(iatRaw);
+  if (!Number.isFinite(iatSeconds) || iatSeconds <= 0) {
+    return false;
+  }
+  const tokenIssuedAtMs = iatSeconds * 1000;
+  const allowedClockSkewMs = 15_000;
+  return tokenIssuedAtMs + allowedClockSkewMs >= requestedAtMs;
+}
 
 export function registerRoutes(app: Express) {
   app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -104,33 +176,73 @@ export function registerRoutes(app: Express) {
     if (!parsed.success) return res.status(400).json(parsed.error);
 
     const { primaryUserId, secondaryUserId, provider } = parsed.data;
-    if (userId !== secondaryUserId) {
+    const canLinkFromSecondary = Boolean(secondaryUserId && userId === secondaryUserId);
+    const canLinkFromPrimary = userId === primaryUserId;
+    if (!canLinkFromPrimary && !canLinkFromSecondary) {
       return res
         .status(403)
-        .json({ status: "denied", reason: "Must link from secondary account" });
+        .json({ status: "denied", reason: "Must link from primary or secondary account" });
     }
 
     try {
       const client = getAuth0ManagementClient();
       const primary = await client.users.get({ id: primaryUserId });
-      const secondary = await client.users.get({ id: secondaryUserId });
 
       const primaryUser: any = (primary as any)?.data ?? primary;
-      const secondaryUser: any = (secondary as any)?.data ?? secondary;
+      const connections = getAuth0Connections();
+
+      const existingOnPrimary = Array.isArray(primaryUser?.identities)
+        ? primaryUser.identities.some((id: any) =>
+            identityMatchesProvider(id, provider, connections),
+          )
+        : false;
+      if (existingOnPrimary) {
+        return res.json({ status: "linked" });
+      }
+
+      let secondaryUser: any = null;
+      if (secondaryUserId && secondaryUserId !== primaryUserId) {
+        const secondary = await client.users.get({ id: secondaryUserId });
+        secondaryUser = (secondary as any)?.data ?? secondary;
+      }
 
       const primaryEmail = String(primaryUser?.email || "").toLowerCase();
-      const secondaryEmail = String(secondaryUser?.email || "").toLowerCase();
       const allowWithoutEmail =
         String(process.env.ALLOW_LINK_WITHOUT_EMAIL || "").toLowerCase() ===
         "true";
 
-      if (primaryEmail && secondaryEmail) {
-        if (primaryEmail !== secondaryEmail) {
-          return res
-            .status(400)
-            .json({ status: "denied", reason: "Emails do not match" });
+      if (!secondaryUser && provider && primaryEmail) {
+        const response: any = await client.users.getAll({
+          q: `email:"${primaryEmail}"`,
+          search_engine: "v3",
+          per_page: 50,
+        } as any);
+        const users = response?.data ?? response ?? [];
+        if (Array.isArray(users)) {
+          secondaryUser = users.find((u: any) => {
+            if (!u || u.user_id === primaryUserId) return false;
+            const identities = Array.isArray(u.identities) ? u.identities : [];
+            return identities.some((id: any) =>
+              identityMatchesProvider(id, provider, connections),
+            );
+          });
         }
-      } else if (!allowWithoutEmail) {
+      }
+
+      if (!secondaryUser) {
+        return res.status(400).json({
+          status: "denied",
+          reason: "No secondary identity found for provider",
+        });
+      }
+
+      const secondaryEmail = String(secondaryUser?.email || "").toLowerCase();
+      if (primaryEmail && secondaryEmail && primaryEmail !== secondaryEmail) {
+        return res
+          .status(400)
+          .json({ status: "denied", reason: "Emails do not match" });
+      }
+      if (!primaryEmail && !secondaryEmail && !allowWithoutEmail) {
         return res.status(400).json({
           status: "denied",
           reason:
@@ -138,25 +250,9 @@ export function registerRoutes(app: Express) {
         });
       }
 
-      const connections = getAuth0Connections();
       const secondaryIdentity = Array.isArray(secondaryUser?.identities)
         ? secondaryUser.identities.find((id: any) => {
-            if (!provider) return true;
-            if (provider === "github") {
-              return (
-                id?.provider === "github" ||
-                id?.connection === connections.github
-              );
-            }
-            if (provider === "google" || provider === "google-oauth2") {
-              return (
-                id?.provider === "google-oauth2" ||
-                id?.connection === connections.google
-              );
-            }
-            return (
-              id?.provider === "slack" || id?.connection === connections.slack
-            );
+            return identityMatchesProvider(id, provider, connections);
           })
         : null;
 
@@ -344,6 +440,22 @@ export function registerRoutes(app: Express) {
 
   app.post("/step-up/start", async (req, res) => {
     const userId = (req as any).userId as string;
+    const payload = (req as any).auth?.payload;
+
+    const parsed = StepUpStartBody.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json(parsed.error);
+    const requestedAtMs = parsed.data?.requestedAtMs;
+
+    const hasMfa = hasMfaEvidence(payload);
+    const hasRecentReauth = hasFreshReauth(payload, requestedAtMs);
+    if (!hasMfa && !hasRecentReauth) {
+      return res.status(403).json({
+        status: "denied",
+        reason:
+          "Step-up denied: no MFA claim and token was not freshly reissued after challenge. Retry step-up.",
+      });
+    }
+
     const ttlMs = 2 * 60 * 1000;
     const now = Date.now();
 

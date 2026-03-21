@@ -25,6 +25,7 @@ type StepUpInfo = {
   active: boolean;
   expiresAt: string | null;
   remainingText: string;
+  pending: boolean;
 };
 
 type AgentPanelProps = {
@@ -438,13 +439,18 @@ export default function AgentPanel({
             whileTap={{ scale: 0.98 }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
             onClick={onStartStepUp}
+            disabled={stepUpInfo.pending}
             className={`mt-3 rounded-full px-4 py-2 text-sm font-semibold ${
               stepUpInfo.active
                 ? "border border-cyan-300/70 bg-cyan-300/20 text-cyan-100"
                 : "border border-amber-300/70 bg-amber-300/25 text-amber-100"
-            }`}
+            } disabled:cursor-not-allowed disabled:opacity-70`}
           >
-            {stepUpInfo.active ? "Refresh Step-up" : "Start Step-up"}
+            {stepUpInfo.pending
+              ? "Step-up in progress..."
+              : stepUpInfo.active
+                ? "Refresh Step-up"
+                : "Start Step-up"}
           </m.button>
         </m.div>
       </div>

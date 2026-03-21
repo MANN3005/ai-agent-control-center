@@ -16,6 +16,17 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <Auth0Provider
       domain={domain}
       clientId={clientId}
+      onRedirectCallback={(appState) => {
+        const appReturnTo = (appState as { returnTo?: string } | undefined)?.returnTo;
+        const storedStepUpReturnTo = window.localStorage.getItem("cc_step_up_return_to");
+        const returnTo = appReturnTo || storedStepUpReturnTo;
+        if (returnTo && returnTo.startsWith("/")) {
+          const current = `${window.location.pathname}${window.location.search}`;
+          if (current !== returnTo) {
+            window.history.replaceState({}, document.title, returnTo);
+          }
+        }
+      }}
       authorizationParams={{
         redirect_uri: window.location.origin,
         audience,

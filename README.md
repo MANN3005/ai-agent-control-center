@@ -20,6 +20,7 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - **Policy enforcement**: AUTO, CONFIRM, and STEP_UP per tool.
 - **Allow-listing**: repo-scoped tools can only touch approved repos.
 - **Agent orchestration**: LLM plans tool calls; humans approve when needed.
+- **Provider-agnostic identity linking**: first authenticated profile becomes primary; additional providers link to that anchor.
 - **Slack and GitHub workflows**: real automation that stays safe.
 - **Slack claims**: volunteers can claim issues in `#new-issues` with natural phrases.
 - **Traceability**: step-by-step trace viewer and structured reasoning in audit logs.
@@ -27,12 +28,20 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - **Audit trails**: immutable records of all decisions and executions.
 
 ## How it works
-1) User logs in with Auth0 and connects GitHub and/or Slack.
-2) Admin allow-lists approved GitHub repos.
-3) Policies define automatic, confirm, or step-up execution per tool.
-4) User runs a tool or submits a natural language task.
-5) The backend enforces policy + allow-list, then executes.
-6) Everything is recorded in the audit log.
+1) User logs in with Auth0 (GitHub, Google, or Slack).
+2) The first successful identity is treated as the primary profile anchor.
+3) User links additional providers to that same primary profile.
+4) Admin allow-lists approved GitHub repos.
+5) Policies define automatic, confirm, or step-up execution per tool.
+6) User runs a tool or submits a natural language task.
+7) The backend enforces policy + allow-list, then executes.
+8) Everything is recorded in audit and LLM trace logs.
+
+## Identity linking model
+- Primary profile is provider-agnostic (not hardcoded to Google).
+- Linking can be finalized from primary or secondary session context.
+- On redirect return, the app restores the primary session provider and completes pending link handshakes.
+- Identity graph center represents the primary profile; linked providers attach around it.
 
 ## Tool catalog
 - `github_explorer` - List GitHub repos, issues, or PRs.
@@ -114,6 +123,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 - POST /agent/continue
 - GET /agent/runs/:id
 - GET /audit
+- GET /llm-audit
 - POST /slack/events
 
 ## UI screens
@@ -122,6 +132,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 - Policies: set risk and mode per tool
 - Agent: task-based execution with approvals
 - Audit: decision history
+- LLM Trace: planning/recovery/reply model call visibility
 
 ## Project structure
 - API server: api/src/index.ts
@@ -174,13 +185,14 @@ Required env vars:
 - `SLACK_EVENTS_DEBUG` (optional)
 
 ## Demo flow
-1) Login and connect GitHub/Slack.
-2) Allow-list a repo.
-3) Set `manage_issues` to CONFIRM and `slack_notifier` to STEP_UP.
-4) Run a tool chain like: "Find the open issues in the backend repo, summarize them, and post that summary to Slack."
-5) Approve actions when prompted.
-6) Review the audit log.
-7) Create an unassigned issue and reply in `#new-issues` with "I’ll take it @yourgithubid".
+1) Login with any supported provider.
+2) Link remaining providers from the Identity Linkage Graph.
+3) Allow-list a repo.
+4) Set `manage_issues` to CONFIRM and `slack_notifier` to STEP_UP.
+5) Run a tool chain like: "Find the open issues in the backend repo, summarize them, and post that summary to Slack."
+6) Approve actions when prompted.
+7) Review the audit log and LLM trace.
+8) Create an unassigned issue and reply in `#new-issues` with "I’ll take it @yourgithubid".
 
 ## Roadmap
 - More connectors (Jira, Linear, ServiceNow).
