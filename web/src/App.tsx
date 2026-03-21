@@ -112,7 +112,6 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
-  const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<Me | null>(null);
   const [policies, setPolicies] = useState<Policy[]>(DEFAULTS);
   const [allowedReposText, setAllowedReposText] = useState("");
@@ -172,7 +171,6 @@ export default function App() {
       return;
     }
     if (!isAuthenticated) {
-      setLoading(false);
       return;
     }
 
@@ -214,7 +212,6 @@ export default function App() {
       }
     } finally {
       setLoadingGithubRepos(false);
-      setLoading(false);
       setRefreshing(false);
     }
   }, [authLoading, getApiToken, isAuthenticated, primaryUserId]);
@@ -773,7 +770,6 @@ export default function App() {
   ]);
 
   const showAuthTransitionGate =
-    loading ||
     authLoading ||
     (!isAuthenticated && (Boolean(linkProvider) || stepUpPending));
 
