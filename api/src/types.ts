@@ -2,6 +2,7 @@ export type ToolName = string;
 
 export type ToolDefinition = {
   name: ToolName;
+  domain?: "github" | "slack";
   needsRepo: boolean;
   defaultRisk: "LOW" | "MEDIUM" | "HIGH";
   defaultMode: "AUTO" | "CONFIRM" | "STEP_UP";

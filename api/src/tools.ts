@@ -11,17 +11,15 @@ import {
   githubReopenIssue,
   parseRepo,
 } from "./services/github";
-import {
-  slackLookupUserByEmail,
-  slackOpenDm,
-  slackPostMessage,
-} from "./services/slack";
+import { slackPostMessage } from "./services/slack";
+import { slackLookupUserByEmail, slackOpenDm } from "./services/slack";
 import { recordAnnouncement } from "./slack-intake";
 
 export function listLocalTools(): ToolDefinition[] {
   return [
     {
       name: "github_explorer",
+      domain: "github",
       needsRepo: false,
       defaultRisk: "LOW",
       defaultMode: "AUTO",
@@ -58,6 +56,7 @@ export function listLocalTools(): ToolDefinition[] {
     },
     {
       name: "manage_issues",
+      domain: "github",
       needsRepo: true,
       defaultRisk: "MEDIUM",
       defaultMode: "CONFIRM",
@@ -273,6 +272,7 @@ export function listLocalTools(): ToolDefinition[] {
     },
     {
       name: "slack_notifier",
+      domain: "slack",
       needsRepo: false,
       defaultRisk: "MEDIUM",
       defaultMode: "CONFIRM",
@@ -308,7 +308,7 @@ export function listLocalTools(): ToolDefinition[] {
   ];
 }
 
-export function listAllTools(): ToolDefinition[] {
+export async function listAllTools() {
   return listLocalTools();
 }
 

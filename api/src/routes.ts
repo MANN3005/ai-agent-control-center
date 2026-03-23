@@ -16,6 +16,7 @@ import {
   getOrCreateStepRecord,
   getSmallTalkReply,
   normalizeAgentSteps,
+  recordPolicyVerdictEntry,
   trace,
   executeToolWithPolicy,
   LLM_AUDIT_LOGS,
@@ -109,7 +110,11 @@ function hasMfaEvidence(payload: any) {
   const acr = typeof acrRaw === "string" ? acrRaw.toLowerCase() : "";
 
   if (amr.includes("mfa")) return true;
-  if (amr.some((value) => ["otp", "totp", "webauthn", "sms", "push"].includes(value))) {
+  if (
+    amr.some((value) =>
+      ["otp", "totp", "webauthn", "sms", "push"].includes(value),
+    )
+  ) {
     return true;
   }
   if (acr.includes("multi-factor") || acr.includes("mfa")) return true;
@@ -177,12 +182,15 @@ export function registerRoutes(app: Express) {
     if (!parsed.success) return res.status(400).json(parsed.error);
 
     const { primaryUserId, secondaryUserId, provider } = parsed.data;
-    const canLinkFromSecondary = Boolean(secondaryUserId && userId === secondaryUserId);
+    const canLinkFromSecondary = Boolean(
+      secondaryUserId && userId === secondaryUserId,
+    );
     const canLinkFromPrimary = userId === primaryUserId;
     if (!canLinkFromPrimary && !canLinkFromSecondary) {
-      return res
-        .status(403)
-        .json({ status: "denied", reason: "Must link from primary or secondary account" });
+      return res.status(403).json({
+        status: "denied",
+        reason: "Must link from primary or secondary account",
+      });
     }
 
     try {
@@ -318,7 +326,23 @@ export function registerRoutes(app: Express) {
   app.get("/policies", async (req, res) => {
     const userId = (req as any).userId as string;
     const policies = await prisma.toolPolicy.findMany({ where: { userId } });
-    res.json(policies);
+    const tools = await listAllTools();
+
+    const merged = new Map<string, any>();
+    for (const tool of tools) {
+      merged.set(tool.name, {
+        userId,
+        toolName: tool.name,
+        riskLevel: tool.defaultRisk,
+        mode: tool.defaultMode,
+      });
+    }
+
+    for (const policy of policies) {
+      merged.set(policy.toolName, policy);
+    }
+
+    return res.json(Array.from(merged.values()));
   });
 
   app.put("/policies", async (req, res) => {
@@ -504,14 +528,35 @@ export function registerRoutes(app: Express) {
         .status(400)
         .json({ status: "denied", reason: "Missing requestId or tool" });
     }
-    const response = await executeToolWithPolicy(
-      userId,
-      requestId,
-      tool,
-      input,
-      approval,
-    );
-    return res.status(response.statusCode).json(response.body);
+
+    try {
+      const response = await executeToolWithPolicy(
+        userId,
+        requestId,
+        tool,
+        input,
+        approval,
+      );
+      return res.status(response.statusCode).json(response.body);
+    } catch (err: any) {
+      await prisma.auditLog.create({
+        data: {
+          userId,
+          requestId,
+          toolName: tool,
+          inputJson: JSON.stringify(input),
+          decision: "ERROR",
+          reason: err?.message || "Unexpected tool execution failure",
+          reasoning: "Unhandled exception in /tools/execute route",
+          executed: false,
+        },
+      });
+
+      return res.status(500).json({
+        status: "error",
+        reason: err?.message || "Unexpected tool execution failure",
+      });
+    }
   });
 
   app.post("/agent/run", async (req, res) => {
@@ -619,8 +664,32 @@ export function registerRoutes(app: Express) {
   app.get("/llm-audit", async (req, res) => {
     const userId = (req as any).userId as string;
     const limit = Math.min(Number(req.query.limit || 50), 200);
+    const llmAuditModel = (prisma as any).llmAuditLog;
+
+    if (llmAuditModel) {
+      const rows = await llmAuditModel.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      });
+
+      return res.json(
+        rows.map((row: any) => ({
+          id: row.id,
+          userId: row.userId,
+          runId: row.runId,
+          requestId: row.requestId,
+          callType: row.callType,
+          model: row.model,
+          input: JSON.parse(row.inputJson || "{}"),
+          output: JSON.parse(row.outputJson || "{}"),
+          createdAt: row.createdAt,
+        })),
+      );
+    }
+
     const logs = LLM_AUDIT_LOGS.get(userId) || [];
-    res.json(logs.slice(0, limit));
+    return res.json(logs.slice(0, limit));
   });
 
   app.get("/agent/runs/:id", async (req, res) => {
@@ -748,6 +817,24 @@ export function registerRoutes(app: Express) {
       );
 
       const responseBody = response.body || {};
+      const policyVerdict =
+        responseBody.status === "executed"
+          ? "ALLOWED"
+          : responseBody.status === "confirm_required"
+            ? "CONFIRM_REQUIRED"
+            : responseBody.status === "step_up_required"
+              ? "STEP_UP_REQUIRED"
+              : response.statusCode >= 400
+                ? "ERROR"
+                : "BLOCKED";
+      recordPolicyVerdictEntry(
+        userId,
+        `${run.id}:${stepIndex + 1}`,
+        step.tool,
+        step.input,
+        policyVerdict,
+        String(responseBody.reason || responseBody.status || "Policy decision"),
+      );
 
       if (
         responseBody.status === "confirm_required" ||

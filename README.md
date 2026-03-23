@@ -23,7 +23,8 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - **Provider-agnostic identity linking**: first authenticated profile becomes primary; additional providers link to that anchor.
 - **Slack and GitHub workflows**: real automation that stays safe.
 - **Slack claims**: volunteers can claim issues in `#new-issues` with natural phrases.
-- **Traceability**: step-by-step trace viewer and structured reasoning in audit logs.
+- **Traceability**: step-by-step trace viewer with planning, recovery, reply, and policy verdict entries.
+- **Durable LLM trace history**: LLM Trace is persisted in Prisma (SQLite) instead of memory-only logs.
 - **Resilience**: retry-with-reflection and circuit breaker protection.
 - **Audit trails**: immutable records of all decisions and executions.
 
@@ -35,7 +36,7 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 5) Policies define automatic, confirm, or step-up execution per tool.
 6) User runs a tool or submits a natural language task.
 7) The backend enforces policy + allow-list, then executes.
-8) Everything is recorded in audit and LLM trace logs.
+8) Everything is recorded in audit and persisted LLM trace logs.
 
 ## Identity linking model
 - Primary profile is provider-agnostic (not hardcoded to Google).
@@ -73,6 +74,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 
 ### Observability
 - Trace viewer shows step-level execution (plan → call → results).
+- Trace viewer includes policy verdict events (allow/confirm/step-up/error decisions).
 - Audit log includes structured decision reasoning for each action.
 
 ### Resilience
@@ -88,6 +90,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 - Auth0 Token Vault integration for GitHub/Slack access tokens.
 - Strong input validation and policy enforcement on every call.
 - LLM planning separated from execution and enforcement.
+- LLM trace records are persisted in Prisma for durable history and debugging.
 
 ### Design
 - Clear control-plane layout with policy, allow-list, agent, and audit screens.
@@ -106,6 +109,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 - **Web**: React + Vite.
 - **Auth**: Auth0 (JWT + Token Vault).
 - **LLM**: Groq API (OpenAI-compatible).
+- **Persistence**: Prisma models for audit logs and LLM trace logs.
 
 ## API endpoints
 - GET /health
@@ -132,7 +136,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 - Policies: set risk and mode per tool
 - Agent: task-based execution with approvals
 - Audit: decision history
-- LLM Trace: planning/recovery/reply model call visibility
+- LLM Trace: planning/recovery/reply/policy call visibility
 
 ## Project structure
 - API server: api/src/index.ts

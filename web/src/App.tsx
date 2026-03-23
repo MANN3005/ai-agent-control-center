@@ -345,6 +345,12 @@ export default function App() {
         const accessToken = await getApiToken();
         const r = await getAgentRun(accessToken, agentRunId);
         if (!active) return;
+        if (r?.status === "not_found") {
+          setAgentRunId(null);
+          setAgentRun(null);
+          setAgentMessages([]);
+          return;
+        }
         if (r?.run) {
           const run = r.run as AgentRun;
           setAgentRun(run);

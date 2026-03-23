@@ -26,7 +26,7 @@ export type AuditEntry = {
 export type LlmAuditEntry = {
   id: string;
   createdAt: string;
-  callType: "plan" | "recovery" | "reply";
+  callType: "plan" | "recovery" | "reply" | "policy";
   model: string;
   requestId?: string | null;
   runId?: string | null;

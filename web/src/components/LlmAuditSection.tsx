@@ -62,6 +62,9 @@ function sparklinePath(series: number[]) {
 
 function semanticClass(text: string) {
   const normalized = text.toLowerCase().trim();
+  if (normalized.includes("verdict: blocked") || normalized.includes("step-up")) {
+    return "text-rose-300";
+  }
   if (normalized.startsWith("asked for missing input")) {
     return "text-amber-300";
   }
@@ -91,6 +94,13 @@ function mockLatency(entry: LlmAuditEntry) {
 }
 
 function summarize(entry: LlmAuditEntry) {
+  if (entry.callType === "policy") {
+    const action = String(entry.output?.action || entry.input?.tool || "tool");
+    const verdict = String(entry.output?.verdict || "UNKNOWN");
+    const reason = String(entry.output?.reason || "No reason provided");
+    return `Action: ${action} | Verdict: ${verdict} | Reason: ${reason}`;
+  }
+
   if (entry.callType === "plan") {
     const stepsCount = Number(entry.output?.stepsCount || 0);
     const question = String(entry.output?.question || "").trim();
@@ -111,17 +121,18 @@ function summarize(entry: LlmAuditEntry) {
 }
 
 export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
-  const [typeFilter, setTypeFilter] = useState<"all" | "plan" | "recovery" | "reply">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "plan" | "recovery" | "reply" | "policy">("all");
   const [query, setQuery] = useState("");
   const [expandedOutputIds, setExpandedOutputIds] = useState<Set<string>>(new Set());
   const [drawerEntry, setDrawerEntry] = useState<LlmAuditEntry | null>(null);
 
   const stats = useMemo(() => {
-    const counts = { plan: 0, recovery: 0, reply: 0 };
+    const counts = { plan: 0, recovery: 0, reply: 0, policy: 0 };
     for (const entry of entries) {
       if (entry.callType === "plan") counts.plan += 1;
       if (entry.callType === "recovery") counts.recovery += 1;
       if (entry.callType === "reply") counts.reply += 1;
+      if (entry.callType === "policy") counts.policy += 1;
     }
     return counts;
   }, [entries]);
@@ -132,6 +143,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
       plan: buildSparklineSeries(entries, (entry) => entry.callType === "plan"),
       recovery: buildSparklineSeries(entries, (entry) => entry.callType === "recovery"),
       reply: buildSparklineSeries(entries, (entry) => entry.callType === "reply"),
+      policy: buildSparklineSeries(entries, (entry) => entry.callType === "policy"),
     }),
     [entries],
   );
@@ -197,7 +209,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
         Shows Groq calls used for planning, recovery, and user-facing replies.
       </p>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[
           {
             key: "total",
@@ -230,6 +242,14 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
             tone: "border-lime-300/60 text-lime-100",
             path: sparklinePath(sparkline.reply),
             stroke: "#B6FF3B",
+          },
+          {
+            key: "policy",
+            label: "Policy",
+            value: stats.policy,
+            tone: "border-rose-300/60 text-rose-100",
+            path: sparklinePath(sparkline.policy),
+            stroke: "#FB7185",
           },
         ].map((card) => (
           <m.div
@@ -295,6 +315,13 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
           >
             Reply
           </button>
+          <button
+            type="button"
+            onClick={() => setTypeFilter("policy")}
+            className={filterChipClass(typeFilter === "policy", "border-rose-300/60 text-rose-100")}
+          >
+            Policy
+          </button>
         </div>
       </div>
 
@@ -330,7 +357,9 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
                   ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-200"
                   : entry.callType === "recovery"
                     ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
-                    : "border-sky-500/40 bg-sky-500/10 text-sky-200";
+                    : entry.callType === "policy"
+                      ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+                      : "border-sky-500/40 bg-sky-500/10 text-sky-200";
               const runTone = runToneClass(entry.runId);
               const whyExpanded = expandedOutputIds.has(entry.id);
 

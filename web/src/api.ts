@@ -74,7 +74,10 @@ export async function putAllowedRepos(accessToken: string, repos: string[]) {
 }
 
 // ----- step-up -----
-export async function startStepUp(accessToken: string, requestedAtMs?: number | null) {
+export async function startStepUp(
+  accessToken: string,
+  requestedAtMs?: number | null,
+) {
   const res = await authedFetch("/step-up/start", accessToken, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

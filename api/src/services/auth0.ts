@@ -31,13 +31,16 @@ export function getAuth0ManagementClient() {
   const clientSecret = requireEnv("AUTH0_M2M_CLIENT_SECRET");
   const audience =
     process.env.AUTH0_MANAGEMENT_AUDIENCE || `https://${domain}/api/v2/`;
+  const requestedScope =
+    process.env.AUTH0_MANAGEMENT_SCOPE ||
+    "read:users read:user_idp_tokens update:users delete:refresh_tokens";
 
   auth0ManagementClient = new ManagementClient({
     domain,
     clientId,
     clientSecret,
     audience,
-    scope: "read:users read:user_idp_tokens update:users",
+    scope: requestedScope,
   } as any);
 
   return auth0ManagementClient;
@@ -122,7 +125,9 @@ export async function findAuth0UserBySlackUserId(slackUserId: string) {
   } as any);
   const exactUsers = exactResponse?.data ?? exactResponse ?? [];
   if (Array.isArray(exactUsers) && exactUsers.length) {
-    const withGithub = exactUsers.find((user: any) => userHasGithubIdentity(user));
+    const withGithub = exactUsers.find((user: any) =>
+      userHasGithubIdentity(user),
+    );
     return withGithub || exactUsers[0];
   }
 
@@ -154,7 +159,9 @@ export async function findAuth0UserBySlackUserId(slackUserId: string) {
 
 export async function findAuth0UserByEmail(email: string) {
   const client = getAuth0ManagementClient();
-  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedEmail = String(email || "")
+    .trim()
+    .toLowerCase();
   if (!normalizedEmail) return null;
 
   const query = `email:"${normalizedEmail}"`;
@@ -191,13 +198,17 @@ export async function resolveCanonicalAuth0UserId(
     const statusCode = Number(err?.statusCode || err?.status || 0);
     const notFound =
       statusCode === 404 ||
-      String(err?.message || "").toLowerCase().includes("user not found");
+      String(err?.message || "")
+        .toLowerCase()
+        .includes("user not found");
     if (!notFound) {
       throw err;
     }
   }
 
-  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedEmail = String(email || "")
+    .trim()
+    .toLowerCase();
   if (!normalizedEmail) {
     return userId;
   }
