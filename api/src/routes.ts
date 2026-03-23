@@ -6,33 +6,36 @@ import {
   AGENT_RUNS,
   LAST_CONTEXT,
   applySlackAutoFill,
-  applyTaskIntentGuards,
   createRunId,
   enqueueAgentRun,
   extractContextFromText,
   formatRunForClient,
   generateAgentPlan,
+  getGithubUsernameFromVault,
   getMissingInputQuestion,
   getOrCreateStepRecord,
   getSmallTalkReply,
+  getToolAwareValidationPrompt,
   normalizeAgentSteps,
+  parsePendingFieldAnswer,
   trace,
   executeToolWithPolicy,
-  LLM_AUDIT_LOGS,
 } from "./agent/engine";
+import { extractFieldsFromText } from "./agent/contextExtractor";
+import { normalizeFields, resolveRepoFields } from "./agent/fieldRegistry";
+import { rectify } from "./agent/rectify";
+import { validateAllSteps } from "./agent/validator";
 import {
-  getGithubAccessToken,
   getAuth0ManagementClient,
   getAuth0Connections,
   hasGithubIdentity,
   hasSlackIdentity,
 } from "./services/auth0";
-import { githubListRepos } from "./services/github";
 import { getToolIndex, listAllTools } from "./tools";
 
 const LinkAccountBody = z.object({
   primaryUserId: z.string().min(1),
-  secondaryUserId: z.string().min(1).optional(),
+  secondaryUserId: z.string().min(1),
   provider: z.enum(["github", "slack", "google", "google-oauth2"]).optional(),
 });
 
@@ -58,78 +61,6 @@ const PutAllowedBody = z.object({
   resourceType: z.string().min(1),
   resources: z.array(z.string().min(1)),
 });
-
-const StepUpStartBody = z
-  .object({
-    requestedAtMs: z.number().finite().positive().optional(),
-  })
-  .optional();
-
-function identityMatchesProvider(
-  identity: any,
-  provider: "github" | "slack" | "google" | "google-oauth2" | undefined,
-  connections: { github: string; google: string; slack: string },
-) {
-  if (!provider) return true;
-  const idProvider = String(identity?.provider || "").toLowerCase();
-  const idConnection = String(identity?.connection || "").toLowerCase();
-  if (provider === "github") {
-    return (
-      idProvider === "github" ||
-      idConnection === String(connections.github || "").toLowerCase() ||
-      idConnection === "github"
-    );
-  }
-  if (provider === "slack") {
-    return (
-      idProvider === "slack" ||
-      (idProvider === "oauth2" && idConnection.includes("slack")) ||
-      idConnection === String(connections.slack || "").toLowerCase() ||
-      idConnection.includes("slack")
-    );
-  }
-  return (
-    idProvider === "google-oauth2" ||
-    idProvider === "google" ||
-    idConnection === String(connections.google || "").toLowerCase() ||
-    idConnection === "google-oauth2" ||
-    idConnection === "google"
-  );
-}
-
-function hasMfaEvidence(payload: any) {
-  const amrRaw = payload?.amr;
-  const acrRaw = payload?.acr;
-
-  const amr = Array.isArray(amrRaw)
-    ? amrRaw.map((v) => String(v).toLowerCase())
-    : typeof amrRaw === "string"
-      ? [amrRaw.toLowerCase()]
-      : [];
-  const acr = typeof acrRaw === "string" ? acrRaw.toLowerCase() : "";
-
-  if (amr.includes("mfa")) return true;
-  if (amr.some((value) => ["otp", "totp", "webauthn", "sms", "push"].includes(value))) {
-    return true;
-  }
-  if (acr.includes("multi-factor") || acr.includes("mfa")) return true;
-
-  return false;
-}
-
-function hasFreshReauth(payload: any, requestedAtMs?: number) {
-  if (typeof requestedAtMs !== "number" || !Number.isFinite(requestedAtMs)) {
-    return false;
-  }
-  const iatRaw = payload?.iat;
-  const iatSeconds = typeof iatRaw === "number" ? iatRaw : Number(iatRaw);
-  if (!Number.isFinite(iatSeconds) || iatSeconds <= 0) {
-    return false;
-  }
-  const tokenIssuedAtMs = iatSeconds * 1000;
-  const allowedClockSkewMs = 15_000;
-  return tokenIssuedAtMs + allowedClockSkewMs >= requestedAtMs;
-}
 
 export function registerRoutes(app: Express) {
   app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -177,73 +108,33 @@ export function registerRoutes(app: Express) {
     if (!parsed.success) return res.status(400).json(parsed.error);
 
     const { primaryUserId, secondaryUserId, provider } = parsed.data;
-    const canLinkFromSecondary = Boolean(secondaryUserId && userId === secondaryUserId);
-    const canLinkFromPrimary = userId === primaryUserId;
-    if (!canLinkFromPrimary && !canLinkFromSecondary) {
+    if (userId !== secondaryUserId) {
       return res
         .status(403)
-        .json({ status: "denied", reason: "Must link from primary or secondary account" });
+        .json({ status: "denied", reason: "Must link from secondary account" });
     }
 
     try {
       const client = getAuth0ManagementClient();
       const primary = await client.users.get({ id: primaryUserId });
+      const secondary = await client.users.get({ id: secondaryUserId });
 
       const primaryUser: any = (primary as any)?.data ?? primary;
-      const connections = getAuth0Connections();
-
-      const existingOnPrimary = Array.isArray(primaryUser?.identities)
-        ? primaryUser.identities.some((id: any) =>
-            identityMatchesProvider(id, provider, connections),
-          )
-        : false;
-      if (existingOnPrimary) {
-        return res.json({ status: "linked" });
-      }
-
-      let secondaryUser: any = null;
-      if (secondaryUserId && secondaryUserId !== primaryUserId) {
-        const secondary = await client.users.get({ id: secondaryUserId });
-        secondaryUser = (secondary as any)?.data ?? secondary;
-      }
+      const secondaryUser: any = (secondary as any)?.data ?? secondary;
 
       const primaryEmail = String(primaryUser?.email || "").toLowerCase();
+      const secondaryEmail = String(secondaryUser?.email || "").toLowerCase();
       const allowWithoutEmail =
         String(process.env.ALLOW_LINK_WITHOUT_EMAIL || "").toLowerCase() ===
         "true";
 
-      if (!secondaryUser && provider && primaryEmail) {
-        const response: any = await client.users.getAll({
-          q: `email:"${primaryEmail}"`,
-          search_engine: "v3",
-          per_page: 50,
-        } as any);
-        const users = response?.data ?? response ?? [];
-        if (Array.isArray(users)) {
-          secondaryUser = users.find((u: any) => {
-            if (!u || u.user_id === primaryUserId) return false;
-            const identities = Array.isArray(u.identities) ? u.identities : [];
-            return identities.some((id: any) =>
-              identityMatchesProvider(id, provider, connections),
-            );
-          });
+      if (primaryEmail && secondaryEmail) {
+        if (primaryEmail !== secondaryEmail) {
+          return res
+            .status(400)
+            .json({ status: "denied", reason: "Emails do not match" });
         }
-      }
-
-      if (!secondaryUser) {
-        return res.status(400).json({
-          status: "denied",
-          reason: "No secondary identity found for provider",
-        });
-      }
-
-      const secondaryEmail = String(secondaryUser?.email || "").toLowerCase();
-      if (primaryEmail && secondaryEmail && primaryEmail !== secondaryEmail) {
-        return res
-          .status(400)
-          .json({ status: "denied", reason: "Emails do not match" });
-      }
-      if (!primaryEmail && !secondaryEmail && !allowWithoutEmail) {
+      } else if (!allowWithoutEmail) {
         return res.status(400).json({
           status: "denied",
           reason:
@@ -251,9 +142,25 @@ export function registerRoutes(app: Express) {
         });
       }
 
+      const connections = getAuth0Connections();
       const secondaryIdentity = Array.isArray(secondaryUser?.identities)
         ? secondaryUser.identities.find((id: any) => {
-            return identityMatchesProvider(id, provider, connections);
+            if (!provider) return true;
+            if (provider === "github") {
+              return (
+                id?.provider === "github" ||
+                id?.connection === connections.github
+              );
+            }
+            if (provider === "google" || provider === "google-oauth2") {
+              return (
+                id?.provider === "google-oauth2" ||
+                id?.connection === connections.google
+              );
+            }
+            return (
+              id?.provider === "slack" || id?.connection === connections.slack
+            );
           })
         : null;
 
@@ -321,6 +228,27 @@ export function registerRoutes(app: Express) {
     res.json(policies);
   });
 
+  app.get("/tools", async (req, res) => {
+    const userId = (req as any).userId as string;
+    try {
+      const tools = await listAllTools(userId);
+      res.json(
+        tools.map((tool) => ({
+          toolName: tool.name,
+          needsRepo: tool.needsRepo,
+          defaultRisk: tool.defaultRisk,
+          defaultMode: tool.defaultMode,
+          description: tool.description || null,
+        })),
+      );
+    } catch (err: any) {
+      res.status(500).json({
+        status: "error",
+        reason: err?.message || "Failed to load tools",
+      });
+    }
+  });
+
   app.put("/policies", async (req, res) => {
     const userId = (req as any).userId as string;
     const parsed = PutPoliciesBody.safeParse(req.body);
@@ -365,50 +293,13 @@ export function registerRoutes(app: Express) {
 
     const { provider, resourceType, resources } = parsed.data;
 
-    let normalizedResources = resources
-      .map((r) => r.trim())
-      .filter((r) => r.length > 0);
-
-    if (
-      provider === "github" &&
-      resourceType === "repo" &&
-      normalizedResources.length
-    ) {
-      try {
-        const githubToken = await getGithubAccessToken(userId);
-        const repos = await githubListRepos(githubToken);
-        const repoByName = new Map<string, string[]>();
-
-        for (const repo of repos) {
-          const fullName = String(repo.fullName || "").trim();
-          const shortName = String(repo.name || "")
-            .trim()
-            .toLowerCase();
-          if (!fullName || !shortName) continue;
-          const existing = repoByName.get(shortName) || [];
-          existing.push(fullName);
-          repoByName.set(shortName, existing);
-        }
-
-        normalizedResources = normalizedResources.map((value) => {
-          if (value.includes("/")) return value;
-          const matches = repoByName.get(value.toLowerCase()) || [];
-          return matches.length === 1 ? matches[0] : value;
-        });
-      } catch {
-        // If GitHub lookup fails, preserve user-provided values.
-      }
-    }
-
-    normalizedResources = Array.from(new Set(normalizedResources));
-
     await prisma.allowedResource.deleteMany({
       where: { userId, provider: provider as any, resourceType },
     });
 
-    if (normalizedResources.length) {
+    if (resources.length) {
       await prisma.allowedResource.createMany({
-        data: normalizedResources.map((r) => ({
+        data: resources.map((r) => ({
           userId,
           provider: provider as any,
           resourceType,
@@ -417,7 +308,7 @@ export function registerRoutes(app: Express) {
       });
     }
 
-    res.json({ ok: true, count: normalizedResources.length });
+    res.json({ ok: true, count: resources.length });
   });
 
   app.get("/audit", async (req, res) => {
@@ -441,22 +332,6 @@ export function registerRoutes(app: Express) {
 
   app.post("/step-up/start", async (req, res) => {
     const userId = (req as any).userId as string;
-    const payload = (req as any).auth?.payload;
-
-    const parsed = StepUpStartBody.safeParse(req.body ?? {});
-    if (!parsed.success) return res.status(400).json(parsed.error);
-    const requestedAtMs = parsed.data?.requestedAtMs;
-
-    const hasMfa = hasMfaEvidence(payload);
-    const hasRecentReauth = hasFreshReauth(payload, requestedAtMs);
-    if (!hasMfa && !hasRecentReauth) {
-      return res.status(403).json({
-        status: "denied",
-        reason:
-          "Step-up denied: no MFA claim and token was not freshly reissued after challenge. Retry step-up.",
-      });
-    }
-
     const ttlMs = 2 * 60 * 1000;
     const now = Date.now();
 
@@ -523,10 +398,19 @@ export function registerRoutes(app: Express) {
     const incomingContext =
       body.context && typeof body.context === "object" ? body.context : {};
 
+    const previousContext = LAST_CONTEXT.get(userId) || {};
     const extracted = extractContextFromText(task);
+    const textExtractedContext = resolveRepoFields(
+      normalizeFields(extractFieldsFromText(task) as Record<string, any>),
+    );
     const context = {
+      ...previousContext,
       ...incomingContext,
       ...extracted,
+      textExtractedContext: {
+        ...(previousContext.textExtractedContext || {}),
+        ...textExtractedContext,
+      },
     };
 
     if (!requestId || !task) {
@@ -548,6 +432,8 @@ export function registerRoutes(app: Express) {
         steps: [],
         currentStep: 0,
         pendingStepIndex: null,
+        pendingFieldCapture: null,
+        pendingRectify: null,
         messages: [
           { role: "user", text: task },
           { role: "agent", text: smallTalk },
@@ -571,6 +457,8 @@ export function registerRoutes(app: Express) {
       steps: [],
       currentStep: 0,
       pendingStepIndex: null,
+      pendingFieldCapture: null,
+      pendingRectify: null,
       messages: [{ role: "user", text: task }],
       trace: [],
     };
@@ -580,24 +468,43 @@ export function registerRoutes(app: Express) {
     trace(run, "thought", "Planning next steps");
 
     try {
-      const tools = await listAllTools();
+      const tools = await listAllTools(userId);
       const toolIndex = getToolIndex(tools);
-      const plan = await generateAgentPlan(task, context, tools, {
-        userId,
-        runId: run.id,
-        requestId,
-      });
-      const guardedSteps = applyTaskIntentGuards(task, plan.steps);
-      const missing = getMissingInputQuestion(guardedSteps, context, toolIndex);
-      if (missing) {
+      const plan = await generateAgentPlan(task, context, tools, userId);
+
+      if (!plan.steps.length) {
         run.status = "NEEDS_INPUT";
-        run.plan = guardedSteps;
-        trace(run, "status", "Waiting for user input");
-        run.messages.push({ role: "agent", text: missing });
+        run.plan = [];
+        trace(run, "status", "Planner requested more input");
+        run.messages.push({
+          role: "agent",
+          text:
+            plan.question ||
+            "I need one required input to proceed. Please provide more details.",
+        });
         return res.json({ status: "started", run: formatRunForClient(run) });
       }
 
-      run.plan = normalizeAgentSteps(guardedSteps, context, toolIndex);
+      run.plan = normalizeAgentSteps(plan.steps, context, toolIndex);
+      const validation = validateAllSteps(run.plan, tools);
+      if (!validation.valid) {
+        run.status = "NEEDS_INPUT";
+        run.pendingFieldCapture = {
+          field: String(validation.missingField || ""),
+          stepIndex: Number(validation.stepIndex || 0),
+          frozenSteps: run.plan.map((step) => ({ ...step, input: { ...step.input } })),
+        };
+        trace(run, "status", "Waiting for user input");
+        run.messages.push({
+          role: "agent",
+          text:
+            validation.missingFieldQuestion ||
+            `I need ${validation.missingField} to proceed.`,
+        });
+        return res.json({ status: "started", run: formatRunForClient(run) });
+      }
+
+      run.pendingFieldCapture = null;
       run.status = "RUNNING";
       trace(run, "thought", "Plan ready, executing");
       enqueueAgentRun(run.id);
@@ -614,13 +521,6 @@ export function registerRoutes(app: Express) {
         run: formatRunForClient(run),
       });
     }
-  });
-
-  app.get("/llm-audit", async (req, res) => {
-    const userId = (req as any).userId as string;
-    const limit = Math.min(Number(req.query.limit || 50), 200);
-    const logs = LLM_AUDIT_LOGS.get(userId) || [];
-    res.json(logs.slice(0, limit));
   });
 
   app.get("/agent/runs/:id", async (req, res) => {
@@ -654,6 +554,25 @@ export function registerRoutes(app: Express) {
     if (message) {
       run.messages.push({ role: "user", text: message });
       const extracted = extractContextFromText(message);
+      const textExtracted = resolveRepoFields(
+        normalizeFields(extractFieldsFromText(message) as Record<string, any>),
+      );
+      run.context.followUpText = message.trim();
+      run.context.textExtractedContext = {
+        ...(run.context.textExtractedContext || {}),
+        ...textExtracted,
+      };
+      const lastAgent = run.messages
+        .slice()
+        .reverse()
+        .find((m) => m.role === "agent");
+      const agentAskedForGithubIdentity = Boolean(
+        lastAgent?.text
+          ?.toLowerCase()
+          .match(/github\s+(username|account|organization)|parameter named 'query'|provide.*query/),
+      );
+      const bareUsername = message.trim().match(/^[A-Za-z0-9-]{2,39}$/);
+
       if (extracted.repo) run.context.repo = extracted.repo;
       if (extracted.repoCandidate)
         run.context.repoCandidate = extracted.repoCandidate;
@@ -668,11 +587,22 @@ export function registerRoutes(app: Express) {
         run.context.assigneeEmail = extracted.assigneeEmail;
       if (extracted.channel) run.context.channel = extracted.channel;
       if (extracted.comment) run.context.comment = extracted.comment;
+      if ((extracted as any).action) run.context.action = (extracted as any).action;
+      if (extracted.githubUsername)
+        run.context.githubUsername = extracted.githubUsername;
+      if (extracted.githubOrg)
+        run.context.githubOrg = extracted.githubOrg;
+      if (extracted.owner) run.context.owner = extracted.owner;
+      if ((extracted as any).query) run.context.query = (extracted as any).query;
+
+      if (agentAskedForGithubIdentity && bareUsername) {
+        const username = bareUsername[0];
+        run.context.githubUsername = username;
+        run.context.owner = username;
+        run.context.query = `user:${username}`;
+      }
+
       if (!run.context.title) {
-        const lastAgent = run.messages
-          .slice()
-          .reverse()
-          .find((m) => m.role === "agent");
         if (lastAgent?.text?.toLowerCase().includes("issue title")) {
           const cleaned = message.trim().replace(/^['"]|['"]$/g, "");
           if (cleaned) run.context.title = cleaned;
@@ -690,30 +620,148 @@ export function registerRoutes(app: Express) {
       }
     }
 
-    if (run.status === "NEEDS_INPUT" && message) {
-      trace(run, "thought", "Updating context from user input");
-      try {
-        const tools = await listAllTools();
-        const toolIndex = getToolIndex(tools);
-        const plan = await generateAgentPlan(run.task, run.context, tools, {
-          userId,
-          runId: run.id,
-          requestId: `${run.id}:replan`,
-        });
-        const guardedSteps = applyTaskIntentGuards(run.task, plan.steps);
-        const missing = getMissingInputQuestion(
-          guardedSteps,
-          run.context,
-          toolIndex,
-        );
-        if (missing) {
+    if (run.status === "NEEDS_INPUT" && message && run.pendingFieldCapture) {
+      const tools = await listAllTools(userId);
+      const capture = run.pendingFieldCapture;
+      const frozenSteps = capture.frozenSteps.map((step) => ({
+        ...step,
+        input: { ...step.input },
+      }));
+
+      const step = frozenSteps[capture.stepIndex];
+      if (!step) {
+        run.pendingFieldCapture = null;
+      } else {
+        step.input[capture.field] = parsePendingFieldAnswer(capture.field, message);
+        step.input = resolveRepoFields(normalizeFields(step.input));
+
+        const validation = validateAllSteps(frozenSteps, tools);
+        if (!validation.valid) {
+          run.pendingFieldCapture = {
+            field: String(validation.missingField || ""),
+            stepIndex: Number(validation.stepIndex || 0),
+            frozenSteps,
+          };
           run.status = "NEEDS_INPUT";
-          run.plan = guardedSteps;
-          run.messages.push({ role: "agent", text: missing });
+          run.plan = frozenSteps;
+          run.messages.push({
+            role: "agent",
+            text:
+              validation.missingFieldQuestion ||
+              `I need ${validation.missingField} to proceed.`,
+          });
           return res.json({ status: "ok", run: formatRunForClient(run) });
         }
 
-        run.plan = normalizeAgentSteps(guardedSteps, run.context, toolIndex);
+        run.pendingFieldCapture = null;
+        run.plan = frozenSteps;
+        run.steps = [];
+        run.currentStep = 0;
+        run.pendingStepIndex = null;
+        run.status = "RUNNING";
+        enqueueAgentRun(run.id);
+        return res.json({ status: "ok", run: formatRunForClient(run) });
+      }
+    }
+
+    if (run.status === "NEEDS_INPUT" && message && run.pendingRectify) {
+      const capture = run.pendingRectify;
+      const frozenToolCall = {
+        tool: String(capture.frozenToolCall.tool || ""),
+        input: { ...(capture.frozenToolCall.input || {}) },
+      };
+
+      let parsedAnswer: any = message.trim();
+      if (
+        capture.missingField === "issue_number" ||
+        capture.missingField === "pull_number"
+      ) {
+        const numeric = parseInt(parsedAnswer.replace(/[^0-9]/g, ""), 10);
+        if (!Number.isNaN(numeric)) parsedAnswer = numeric;
+      }
+
+      frozenToolCall.input[capture.missingField] = parsedAnswer;
+      run.pendingRectify = null;
+
+      const githubUsername = await getGithubUsernameFromVault(userId);
+      const retried = rectify(frozenToolCall, message, githubUsername || undefined);
+
+      if (retried.type === "NEEDS_INPUT") {
+        run.pendingRectify = {
+          frozenToolCall: retried.frozenToolCall || frozenToolCall,
+          missingField: String(retried.missingField || ""),
+        };
+        run.status = "NEEDS_INPUT";
+        run.messages.push({
+          role: "agent",
+          text:
+            retried.question ||
+            `I need ${retried.missingField || "additional input"} to proceed.`,
+        });
+        return res.json({ status: "ok", run: formatRunForClient(run) });
+      }
+
+      if (retried.toolCall) {
+        run.plan = [
+          {
+            tool: retried.toolCall.tool,
+            input: retried.toolCall.input,
+          },
+        ];
+      }
+
+      run.pendingFieldCapture = null;
+      run.steps = [];
+      run.currentStep = 0;
+      run.pendingStepIndex = null;
+      run.status = "RUNNING";
+      enqueueAgentRun(run.id);
+      return res.json({ status: "ok", run: formatRunForClient(run) });
+    }
+
+    if (run.status === "NEEDS_INPUT" && message) {
+      trace(run, "thought", "Updating context from user input");
+      try {
+        const tools = await listAllTools(userId);
+        const toolIndex = getToolIndex(tools);
+        const plan = await generateAgentPlan(
+          run.task,
+          run.context,
+          tools,
+          userId,
+        );
+
+        if (!plan.steps.length) {
+          run.status = "NEEDS_INPUT";
+          run.plan = [];
+          run.messages.push({
+            role: "agent",
+            text:
+              plan.question ||
+              "I still need one required input to continue. Please provide more details.",
+          });
+          return res.json({ status: "ok", run: formatRunForClient(run) });
+        }
+
+        run.plan = normalizeAgentSteps(plan.steps, run.context, toolIndex);
+        const validation = validateAllSteps(run.plan, tools);
+        if (!validation.valid) {
+          run.status = "NEEDS_INPUT";
+          run.pendingFieldCapture = {
+            field: String(validation.missingField || ""),
+            stepIndex: Number(validation.stepIndex || 0),
+            frozenSteps: run.plan.map((step) => ({ ...step, input: { ...step.input } })),
+          };
+          run.messages.push({
+            role: "agent",
+            text:
+              validation.missingFieldQuestion ||
+              `I need ${validation.missingField} to proceed.`,
+          });
+          return res.json({ status: "ok", run: formatRunForClient(run) });
+        }
+
+        run.pendingFieldCapture = null;
         run.steps = [];
         run.currentStep = 0;
         run.pendingStepIndex = null;
@@ -732,6 +780,24 @@ export function registerRoutes(app: Express) {
       const stepIndex = run.pendingStepIndex;
       const step = run.plan[stepIndex];
       const stepRecord = getOrCreateStepRecord(run, stepIndex, step);
+
+      const tools = await listAllTools(userId);
+      const validation = validateAllSteps([step], tools);
+      if (!validation.valid) {
+        run.status = "NEEDS_INPUT";
+        run.pendingFieldCapture = {
+          field: String(validation.missingField || ""),
+          stepIndex,
+          frozenSteps: run.plan.map((s) => ({ ...s, input: { ...s.input } })),
+        };
+        run.messages.push({
+          role: "agent",
+          text:
+            validation.missingFieldQuestion ||
+            `I need ${validation.missingField} to proceed.`,
+        });
+        return res.json({ status: "ok", run: formatRunForClient(run) });
+      }
 
       if (!approval.confirmed) {
         return res.json({ status: "ok", run: formatRunForClient(run) });
@@ -764,6 +830,39 @@ export function registerRoutes(app: Express) {
         stepRecord.status = "ERROR";
         stepRecord.result = responseBody;
         stepRecord.reason = responseBody.reason || "Agent step failed";
+
+        if (
+          String(responseBody.reason || "")
+            .toLowerCase()
+            .startsWith("issues disabled in repository:")
+        ) {
+          run.status = "NEEDS_INPUT";
+          run.lastError = undefined;
+          run.messages.push({
+            role: "agent",
+            text:
+              "That repository has GitHub Issues disabled, so I cannot create an issue there. Share another repository with Issues enabled, and I will retry.",
+          });
+          return res.json({ status: "ok", run: formatRunForClient(run) });
+        }
+
+        if (
+          String(responseBody.reason || "")
+            .toLowerCase()
+            .startsWith("input validation failed")
+        ) {
+          run.status = "NEEDS_INPUT";
+          run.lastError = undefined;
+          run.messages.push({
+            role: "agent",
+            text: getToolAwareValidationPrompt(
+              step.tool,
+              String(responseBody.reason || ""),
+            ),
+          });
+          return res.json({ status: "ok", run: formatRunForClient(run) });
+        }
+
         run.status = "ERROR";
         run.lastError = responseBody.reason || "Agent step failed";
         run.messages.push({ role: "agent", text: `Error: ${run.lastError}` });
