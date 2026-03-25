@@ -24,6 +24,12 @@ AI agents are powerful, but most can’t leave the sandbox. This project enables
 - **Slack and GitHub workflows**: real automation that stays safe.
 - **Slack claims**: volunteers can claim issues in `#new-issues` with natural phrases.
 - **Traceability**: step-by-step trace viewer with planning, recovery, reply, and policy verdict entries.
+- **Token Health monitor**: vault protection status and token TTL visibility without exposing secrets.
+- **Live policy decision log**: terminal-style feed of recent allow/deny/step-up decisions with reasons.
+- **Policy Impact visualizer**: blocked reasons open a clickable rule-by-rule policy evaluation trace.
+- **Real-Time Resource Map**: permission scan view with per-repo capability levels.
+- **Interactive step-up trigger**: one-click identity re-verification from the Access screen.
+- **Session Lockdown / Kill Switch**: disarm the agent and request token revocation from Auth0 Management API.
 - **Durable LLM trace history**: LLM Trace is persisted in Prisma (SQLite) instead of memory-only logs.
 - **Resilience**: retry-with-reflection and circuit breaker protection.
 - **Audit trails**: immutable records of all decisions and executions.
@@ -114,6 +120,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 ## API endpoints
 - GET /health
 - GET /me
+- GET /access-state
 - GET /debug/identities
 - POST /auth/link
 - POST /auth/unlink
@@ -122,6 +129,8 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 - GET /allowed-resources
 - PUT /allowed-resources
 - POST /step-up/start
+- POST /agent/lockdown
+- POST /agent/arm
 - POST /tools/execute
 - POST /agent/run
 - POST /agent/continue
@@ -132,6 +141,7 @@ Note: Auth0 identity linkage is the source of truth. When a user links Slack + G
 
 ## UI screens
 - Home: overview stats
+- Access: token health, live policy decisions, and step-up trigger
 - Allow-list: manage allowed GitHub repos
 - Policies: set risk and mode per tool
 - Agent: task-based execution with approvals

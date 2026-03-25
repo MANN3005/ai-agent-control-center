@@ -183,6 +183,140 @@ export function getAuth0Connections() {
   };
 }
 
+async function getManagementApiAccessToken() {
+  const domain = requireEnv("AUTH0_DOMAIN");
+  const clientId = requireEnv("AUTH0_M2M_CLIENT_ID");
+  const clientSecret = requireEnv("AUTH0_M2M_CLIENT_SECRET");
+  const audience =
+    process.env.AUTH0_MANAGEMENT_AUDIENCE || `https://${domain}/api/v2/`;
+
+  const response = await fetch(`https://${domain}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret,
+      audience,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to mint Auth0 management token: ${text || response.statusText}`,
+    );
+  }
+
+  const payload: any = await response.json();
+  const token = String(payload?.access_token || "");
+  if (!token) throw new Error("Auth0 management token missing in response");
+  return token;
+}
+
+async function auth0ManagementFetch(path: string, init: RequestInit) {
+  const domain = requireEnv("AUTH0_DOMAIN");
+  const token = await getManagementApiAccessToken();
+  const url = `https://${domain}${path}`;
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+  return response;
+}
+
+export async function revokeAllAuth0VaultTokens(userId: string) {
+  const encodedUserId = encodeURIComponent(userId);
+  const steps: Array<{ step: string; ok: boolean; detail?: string }> = [];
+
+  try {
+    const refreshRes = await auth0ManagementFetch(
+      `/api/v2/users/${encodedUserId}/refresh-tokens`,
+      { method: "DELETE" },
+    );
+    steps.push({
+      step: "delete_refresh_tokens",
+      ok: refreshRes.ok,
+      detail: refreshRes.ok
+        ? undefined
+        : await refreshRes.text().catch(() => ""),
+    });
+  } catch (err: any) {
+    steps.push({
+      step: "delete_refresh_tokens",
+      ok: false,
+      detail: err?.message || "request_failed",
+    });
+  }
+
+  try {
+    const grantsRes = await auth0ManagementFetch(
+      `/api/v2/grants?user_id=${encodedUserId}&per_page=100`,
+      { method: "GET" },
+    );
+    if (grantsRes.ok) {
+      const grants: any[] = (await grantsRes.json().catch(() => [])) || [];
+      for (const grant of grants) {
+        const grantId = String(grant?.id || "").trim();
+        if (!grantId) continue;
+        const revokeGrantRes = await auth0ManagementFetch(
+          `/api/v2/grants/${encodeURIComponent(grantId)}`,
+          { method: "DELETE" },
+        );
+        steps.push({
+          step: `delete_grant:${grantId}`,
+          ok: revokeGrantRes.ok,
+          detail: revokeGrantRes.ok
+            ? undefined
+            : await revokeGrantRes.text().catch(() => ""),
+        });
+      }
+    } else {
+      steps.push({
+        step: "list_grants",
+        ok: false,
+        detail: await grantsRes.text().catch(() => ""),
+      });
+    }
+  } catch (err: any) {
+    steps.push({
+      step: "revoke_grants",
+      ok: false,
+      detail: err?.message || "request_failed",
+    });
+  }
+
+  try {
+    const sessionRes = await auth0ManagementFetch(
+      `/api/v2/users/${encodedUserId}/revoke-sign-in-sessions`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    steps.push({
+      step: "revoke_sign_in_sessions",
+      ok: sessionRes.ok,
+      detail: sessionRes.ok
+        ? undefined
+        : await sessionRes.text().catch(() => ""),
+    });
+  } catch (err: any) {
+    steps.push({
+      step: "revoke_sign_in_sessions",
+      ok: false,
+      detail: err?.message || "request_failed",
+    });
+  }
+
+  const anySuccess = steps.some((step) => step.ok);
+  return {
+    ok: anySuccess,
+    steps,
+  };
+}
+
 export async function resolveCanonicalAuth0UserId(
   userId: string,
   email?: string | null,

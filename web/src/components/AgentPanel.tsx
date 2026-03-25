@@ -4,9 +4,11 @@ import {
   Bot,
   ChevronDown,
   Cpu,
+  Lock,
   Shield,
   ShieldAlert,
   Sparkles,
+  Unlock,
   Workflow,
 } from "lucide-react";
 import type {
@@ -44,6 +46,11 @@ type AgentPanelProps = {
   onAllowListRepo: (repo: string) => void;
   stepUpInfo: StepUpInfo;
   onStartStepUp: () => void;
+  agentHealth: {
+    status: "STANDBY" | "DISARMED";
+    disarmedAt: string | null;
+    reason: string | null;
+  };
 };
 
 function renderAgentOutput(step: AgentStep) {
@@ -208,9 +215,11 @@ export default function AgentPanel({
   onAllowListRepo,
   stepUpInfo,
   onStartStepUp,
+  agentHealth,
 }: AgentPanelProps) {
   const [expandedOutputIndex, setExpandedOutputIndex] = useState<number | null>(null);
   const [selectedFlowNode, setSelectedFlowNode] = useState<"thought" | "policy" | "tool" | "output">("thought");
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const chatMessages: AgentMessage[] = agentMessages.length
     ? agentMessages
@@ -239,6 +248,23 @@ export default function AgentPanel({
   ];
 
   const latestTraceText = agentTrace[agentTrace.length - 1]?.text ?? "";
+  const isDisarmed = agentHealth.status === "DISARMED";
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  const disarmedAtMs = agentHealth.disarmedAt
+    ? new Date(agentHealth.disarmedAt).getTime()
+    : Number.NaN;
+  const showDisarmedToast =
+    isDisarmed &&
+    Number.isFinite(disarmedAtMs) &&
+    nowMs - disarmedAtMs >= 0 &&
+    nowMs - disarmedAtMs <= 5000;
 
   const remainingSeconds = useMemo(() => {
     if (!stepUpInfo.remainingText || stepUpInfo.remainingText === "-") return null;
@@ -455,6 +481,49 @@ export default function AgentPanel({
         </m.div>
       </div>
 
+      <div
+        className={`mt-4 rounded-2xl border p-4 ${
+          isDisarmed
+            ? "border-rose-300/55 bg-rose-300/12"
+            : "border-emerald-300/45 bg-emerald-300/10"
+        }`}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-200">
+              {isDisarmed ? <Lock className="h-4 w-4 text-rose-200" /> : <Unlock className="h-4 w-4 text-emerald-200" />}
+              Agent Control Plane
+            </div>
+            <div className="mt-1 text-sm">
+              <span className={`font-black ${isDisarmed ? "text-rose-200" : "text-emerald-200"}`}>
+                {isDisarmed ? "DISARMED" : "ARMED"}
+              </span>
+              {isDisarmed ? (
+                <span className="ml-2 text-slate-200">
+                  Tool calls are intentionally blocked by Session Lockdown.
+                </span>
+              ) : (
+                <span className="ml-2 text-slate-200">
+                  Agent execution path is active.
+                </span>
+              )}
+            </div>
+            {agentHealth.disarmedAt ? (
+              <div className="mt-1 text-xs text-slate-300">
+                Disarmed at {new Date(agentHealth.disarmedAt).toLocaleString()}
+                {agentHealth.reason ? ` | Reason: ${agentHealth.reason}` : ""}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {isDisarmed && showDisarmedToast ? (
+        <div className="fixed right-5 top-20 z-70 rounded-xl border border-rose-300/45 bg-slate-950/95 px-4 py-3 text-sm text-rose-100 shadow-[0_0_24px_rgba(244,63,94,0.35)]">
+          Session is DISARMED. Manage Lockdown/Re-arm from Access page.
+        </div>
+      ) : null}
+
       <div className="mt-5 grid gap-3">
         <div className="grid max-h-72 gap-3 overflow-auto rounded-2xl border border-slate-700 bg-slate-900/55 p-3">
           {chatMessages.map((msg: AgentMessage, idx: number) => (
@@ -519,11 +588,13 @@ export default function AgentPanel({
             rows={3}
             placeholder="Ask the agent to do something..."
             onKeyDown={(e) => {
+              if (isDisarmed) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 onSend();
               }
             }}
+            disabled={isDisarmed}
           />
           <m.button
             type="button"
@@ -531,6 +602,7 @@ export default function AgentPanel({
             whileTap={{ scale: 0.98 }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
             onClick={onSend}
+            disabled={isDisarmed}
             className="inline-flex items-center gap-2 rounded-full border border-cyan-200/35 bg-linear-to-r from-cyan-300 to-sky-300 px-6 py-2.5 text-sm font-black text-black shadow-[0_0_20px_rgba(64,224,255,0.32)]"
           >
             <Sparkles className="h-4 w-4" />

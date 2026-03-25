@@ -37,6 +37,47 @@ export async function getMe(accessToken: string) {
   return res.json();
 }
 
+export async function getAccessState(accessToken: string) {
+  const res = await authedFetch("/access-state", accessToken);
+  return res.json();
+}
+
+export async function lockAgentSession(
+  accessToken: string,
+  reason = "Manual session lockdown",
+) {
+  const res = await authedFetch("/agent/lockdown", accessToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  return res.json();
+}
+
+export async function armAgentSession(
+  accessToken: string,
+  requestedAtMs?: number | null,
+) {
+  const res = await authedFetch("/agent/arm", accessToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      typeof requestedAtMs === "number" && Number.isFinite(requestedAtMs)
+        ? { requestedAtMs }
+        : {},
+    ),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const reason =
+      payload && typeof payload.reason === "string"
+        ? payload.reason
+        : "Failed to re-arm session.";
+    throw new Error(reason);
+  }
+  return payload;
+}
+
 export async function getPolicies(accessToken: string) {
   const res = await authedFetch("/policies", accessToken);
   return res.json();
