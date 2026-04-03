@@ -1,218 +1,507 @@
 # AI Agent Control Center
 
-**Authorized to Act: AI Agents with Auth0**
+## Authorized to Act: AI Agents with Auth0 Token Vault
 
-A secure, business-ready control plane for AI agents that act on GitHub and Slack. It solves the trust deficit by enforcing **explicit permission boundaries**, **step-up authentication**, and **auditable execution** using Auth0’s Token Vault.
+AI Agent Control Center is a secure operations layer for autonomous agents that need to work with real tools like GitHub and Slack.
 
-In short: a **policy-gated agent platform** built for teams that care about security, accountability, and safe automation.
+It combines:
+- Auth0 for AI Agents (Token Vault)
+- explicit permission boundaries
+- risk-based execution controls
+- complete observability
 
-## Executive summary
-AI agents are powerful, but most can’t leave the sandbox. This project enables real-world agent workflows by combining Auth0’s identity layer with strict tool governance: allow-listed resources, risk-based approvals, and fully traceable execution. It is designed to be deployable in real teams, not just demos.
+so teams can move from toy demos to production-ready agent workflows.
 
-## Why this wins the trust game
-- **Security-first**: no tool executes without explicit policy and resource approval.
-- **Token Vault integration**: user tokens stay protected in Auth0.
-- **Step-up for high risk**: time-boxed approvals for critical actions.
-- **Audit-ready**: every decision and tool call is logged with context.
-- **Clear user control**: policies are visible and enforced at runtime.
+This project was built for the Authorized to Act Hackathon and is designed to directly satisfy the Token Vault requirement.
 
-## Features
-- **Policy enforcement**: AUTO, CONFIRM, and STEP_UP per tool.
-- **Allow-listing**: repo-scoped tools can only touch approved repos.
-- **Agent orchestration**: LLM plans tool calls; humans approve when needed.
-- **Provider-agnostic identity linking**: first authenticated profile becomes primary; additional providers link to that anchor.
-- **Slack and GitHub workflows**: real automation that stays safe.
-- **Slack claims**: volunteers can claim issues in `#new-issues` with natural phrases.
-- **Traceability**: step-by-step trace viewer with planning, recovery, reply, and policy verdict entries.
-- **Token Health monitor**: vault protection status and token TTL visibility without exposing secrets.
-- **Live policy decision log**: terminal-style feed of recent allow/deny/step-up decisions with reasons.
-- **Policy Impact visualizer**: blocked reasons open a clickable rule-by-rule policy evaluation trace.
-- **Real-Time Resource Map**: permission scan view with per-repo capability levels.
-- **Interactive step-up trigger**: one-click identity re-verification from the Access screen.
-- **Session Lockdown / Kill Switch**: disarm the agent and request token revocation from Auth0 Management API.
-- **Durable LLM trace history**: LLM Trace is persisted in Prisma (SQLite) instead of memory-only logs.
-- **Resilience**: retry-with-reflection and circuit breaker protection.
-- **Audit trails**: immutable records of all decisions and executions.
+---
 
-## How it works
-1) User logs in with Auth0 (GitHub, Google, or Slack).
-2) The first successful identity is treated as the primary profile anchor.
-3) User links additional providers to that same primary profile.
-4) Admin allow-lists approved GitHub repos.
-5) Policies define automatic, confirm, or step-up execution per tool.
-6) User runs a tool or submits a natural language task.
-7) The backend enforces policy + allow-list, then executes.
-8) Everything is recorded in audit and persisted LLM trace logs.
+## Table of Contents
+- Product Overview
+- Why This Matters
+- Core Product Capabilities
+- Security and Trust Model
+- User Experience
+- Architecture
+- End-to-End Flow
+- Tool Catalog
+- API Surface
+- Setup and Quickstart
+- Environment Variables
+- Auth0 Setup Notes
+- Slack Events Setup
+- Demo Guide and Submission Checklist
+- Judging Criteria Mapping
+- Deployment Notes
+- Troubleshooting
+- Roadmap
+- License
 
-## Identity linking model
-- Primary profile is provider-agnostic (not hardcoded to Google).
-- Linking can be finalized from primary or secondary session context.
-- On redirect return, the app restores the primary session provider and completes pending link handshakes.
-- Identity graph center represents the primary profile; linked providers attach around it.
+---
 
-## Tool catalog
-- `github_explorer` - List GitHub repos, issues, or PRs.
-- `manage_issues` - Create, close, reopen, or comment on GitHub issues.
-- `slack_notifier` - Post a message or summary to Slack.
+## Product Overview
 
-## Tool actions
+Most agents can reason, but cannot safely act across a user’s real systems.
+
+AI Agent Control Center solves that by introducing an intermediary governance layer between an agent runtime and external APIs:
+- Agents can only operate inside approved boundaries.
+- Sensitive actions require explicit approval and step-up re-verification.
+- Every policy decision and tool action is traceable.
+
+In plain terms: this is an enterprise-style control plane for AI actions.
+
+---
+
+## Why This Matters
+
+The industry is moving fast toward local and sovereign AI runtimes, but external API access is still a trust bottleneck.
+
+This project addresses that bottleneck with a practical pattern:
+- Keep the agent restricted.
+- Keep credentials in Token Vault.
+- Let users control what the agent can do.
+- Keep a full audit trail of outcomes and rationale.
+
+---
+
+## Core Product Capabilities
+
+### 1) Identity and token governance
+- Auth0-backed login and provider linking.
+- Provider-agnostic identity model (first successful login becomes primary profile anchor).
+- GitHub and Slack token retrieval via Token Vault-backed identity records.
+
+### 2) Explicit permission boundaries
+- Repo allow-listing for repository-scoped tools.
+- Runtime enforcement of allow-listed resources.
+- Clear blocked reasons when boundaries are violated.
+
+### 3) Risk-based agent controls
+- Per-tool modes: `AUTO`, `CONFIRM`, `STEP_UP`.
+- Human-in-the-loop approvals for high-stakes actions.
+- Step-up authentication sessions for sensitive paths.
+
+### 4) Security controls for live operations
+- Session Lockdown / Kill Switch to disarm actions.
+- Re-arm flow with re-auth verification.
+- Optional token revocation requests via Auth0 management APIs.
+
+### 5) Full observability
+- Audit log for policy outcomes and execution context.
+- LLM activity trace for planning, recovery, reply, and policy calls.
+- Summary intelligence cards and one-click executive summary generation.
+
+### 6) Workflow utility
+- GitHub issue management actions.
+- Slack notification and summary posting.
+- Slack issue-claim flow in `#new-issues` with identity-aware assignment.
+
+---
+
+## Security and Trust Model
+
+### Policy gates
+No tool executes unless policy checks pass.
+
+### Resource constraints
+Repo-scoped actions are hard-limited to approved repositories.
+
+### Step-up for high risk
+Critical actions can require active re-verification before approval.
+
+### Token handling
+OAuth token lifecycle stays with Auth0 Token Vault patterns; tokens are not exposed through the UI.
+
+### Auditability
+All decisions and outcomes are logged and inspectable.
+
+---
+
+## User Experience
+
+### Screens
+- Home: system posture, connected identities, executive summary
+- Access: token health, live policy outcomes, verification controls
+- Repositories: allow-list management
+- Policies: risk + execution mode controls per tool
+- Agent: task execution, approvals, trace timeline
+- Activity Audit: decision outcomes and rationale
+- AI Activity: planning/recovery/reply/policy telemetry
+
+### Product UX principles
+- Human-readable statuses (not raw booleans)
+- Fast recovery paths when blocked (example: grant repo access shortcut)
+- Clear visibility into why an action was allowed or blocked
+
+---
+
+## Architecture
+
+- API: Node.js + Express + Prisma + SQLite
+- Web: React + Vite
+- Auth: Auth0 (JWT validation + management APIs + Token Vault patterns)
+- LLM: Groq (OpenAI-compatible)
+- Persistence: Prisma models for audit and LLM activity records
+
+### High-level components
+- API routing and enforcement: `api/src/routes.ts`
+- Agent execution and orchestration: `api/src/agent/engine.ts`
+- Tool registry and execution: `api/src/tools.ts`
+- Auth0 integration: `api/src/services/auth0.ts`
+- LLM integration: `api/src/services/llm.ts`
+- Slack events and claims flow: `api/src/slack-events.ts`
+- Frontend app shell: `web/src/App.tsx`
+
+---
+
+## End-to-End Flow
+
+1. User authenticates with Auth0.
+2. First authenticated identity becomes the primary profile anchor.
+3. User links additional providers (GitHub/Slack).
+4. Admin or user configures approved repositories.
+5. Policies define execution mode (`AUTO`, `CONFIRM`, `STEP_UP`) per tool.
+6. User requests an agent action.
+7. Backend validates policy + boundaries + session requirements.
+8. Action executes (or requests approval/step-up).
+9. Audit and LLM activity are persisted for review.
+
+---
+
+## Tool Catalog
+
+- `github_explorer`: list repositories, issues, pull requests
+- `manage_issues`: create, close, reopen, comment on issues
+- `slack_notifier`: post updates and summaries to Slack
+
+### Tool actions
 - `github_explorer.resource`: `repos`, `issues`, `prs`
 - `manage_issues.action`: `create`, `close`, `reopen`, `comment`
 - `slack_notifier.action`: `post`, `summary`
 
-## Slack issue claims (new-issues)
-- When an unassigned issue is created, it posts to `#new-issues` with a prompt.
-- Team members can reply **in the thread** with natural phrases like:
-	- "I’ll take it", "assign to me", "I can work on this", "I’ll handle this"
-	- Optional GitHub handle: "assign to me @githubid"
-- The system adds a GitHub comment and assigns the issue when a GitHub handle is provided.
-- If no GitHub handle is provided, it attempts to match by Slack user email; if no match, it only comments.
+---
 
-Note: Auth0 identity linkage is the source of truth. When a user links Slack + GitHub in Auth0, the app uses that linkage to map Slack users to GitHub identities without requiring `@githubid`.
+## API Surface
 
-## Hackathon judging alignment
+### Core health and identity
+- `GET /health`
+- `GET /me`
+- `GET /access-state`
+- `GET /debug/identities`
 
-### Security model
-- Explicit repo allow-lists block unauthorized access.
-- Risk-based policy gates every tool.
-- Step-up sessions protect high-stakes actions.
-- Token Vault ensures credentials never sit in the app.
+### Auth and identity linking
+- `POST /auth/link`
+- `POST /auth/unlink`
+
+### Policies and boundaries
+- `GET /policies`
+- `PUT /policies`
+- `GET /allowed-resources`
+- `PUT /allowed-resources`
+
+### Step-up and agent controls
+- `POST /step-up/start`
+- `POST /agent/lockdown`
+- `POST /agent/arm`
+
+### Tool and agent execution
+- `POST /tools/execute`
+- `POST /agent/run`
+- `POST /agent/continue`
+- `GET /agent/runs/:id`
 
 ### Observability
-- Trace viewer shows step-level execution (plan → call → results).
-- Trace viewer includes policy verdict events (allow/confirm/step-up/error decisions).
-- Audit log includes structured decision reasoning for each action.
+- `GET /audit`
+- `GET /llm-audit`
 
-### Resilience
-- Retry-with-reflection to recover from common errors (bad repo names, missing inputs).
-- Circuit breaker freezes runaway actions and notifies the owner on Slack.
+### Slack events
+- `POST /slack/events`
 
-### User control
-- Policies are visible and editable in the UI.
-- Approvals are explicit and time-limited.
-- Agent steps are transparent with clear prompts.
+---
 
-### Technical execution
-- Auth0 Token Vault integration for GitHub/Slack access tokens.
-- Strong input validation and policy enforcement on every call.
-- LLM planning separated from execution and enforcement.
-- LLM trace records are persisted in Prisma for durable history and debugging.
+## Setup and Quickstart
 
-### Design
-- Clear control-plane layout with policy, allow-list, agent, and audit screens.
-- Balanced frontend/backend with real integrations.
-
-### Potential impact
-- A template for safe, production-ready AI agent workflows.
-- Reusable policy and auditing patterns for enterprise use.
-
-### Insight value
-- Demonstrates how identity and governance enable agents to leave the sandbox.
-- Reveals the operational patterns needed for secure tool calling.
-
-## Architecture
-- **API**: Node + Express + Prisma + SQLite.
-- **Web**: React + Vite.
-- **Auth**: Auth0 (JWT + Token Vault).
-- **LLM**: Groq API (OpenAI-compatible).
-- **Persistence**: Prisma models for audit logs and LLM trace logs.
-
-## API endpoints
-- GET /health
-- GET /me
-- GET /access-state
-- GET /debug/identities
-- POST /auth/link
-- POST /auth/unlink
-- GET /policies
-- PUT /policies
-- GET /allowed-resources
-- PUT /allowed-resources
-- POST /step-up/start
-- POST /agent/lockdown
-- POST /agent/arm
-- POST /tools/execute
-- POST /agent/run
-- POST /agent/continue
-- GET /agent/runs/:id
-- GET /audit
-- GET /llm-audit
-- POST /slack/events
-
-## UI screens
-- Home: overview stats
-- Access: token health, live policy decisions, and step-up trigger
-- Allow-list: manage allowed GitHub repos
-- Policies: set risk and mode per tool
-- Agent: task-based execution with approvals
-- Audit: decision history
-- LLM Trace: planning/recovery/reply/policy call visibility
-
-## Project structure
-- API server: api/src/index.ts
-- API routes: api/src/routes.ts
-- Tool registry: api/src/tools.ts
-- Prisma schema: api/prisma/schema.prisma
-- Web app: web/src/App.tsx
-
-## Quickstart
+### Prerequisites
+- Node.js 18+
+- npm
+- Auth0 tenant configured for app + M2M + provider connections
+- Groq API key
+- Optional: Slack app + ngrok for events testing
 
 ### 1) Install dependencies
+
 ```bash
 npm install
-cd api && npm install
-cd ../web && npm install
+npm run install:all
 ```
 
-### 2) Database
+### 2) Configure environment variables
+
+Create:
+- `api/.env`
+- `web/.env`
+
+Use the Environment Variables section below.
+
+### 3) Database setup
+
 ```bash
 cd api
 npx prisma migrate dev
 ```
 
-### 3) Run the apps
+### 4) Run locally (both API + web)
+
+From repository root:
+
 ```bash
-cd api
 npm run dev
 ```
 
+Default URLs:
+- Web: `http://localhost:5173`
+- API: `http://localhost:4000`
+
+---
+
+## Environment Variables
+
+## API (`api/.env`)
+
+Required:
+
 ```bash
-cd web
-npm run dev
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_AUDIENCE=https://control-center-api
+AUTH0_M2M_CLIENT_ID=...
+AUTH0_M2M_CLIENT_SECRET=...
+GROQ_API_KEY=...
 ```
 
-Open the web app at http://localhost:5173
+Recommended / optional:
 
-## Slack Events setup
-1) Create a Slack app and add a Bot User.
-2) Enable Event Subscriptions and set the Request URL to:
-	`https://<your-ngrok-id>.ngrok-free.dev/slack/events`
-3) Subscribe to Bot Events: `message.channels`.
-4) OAuth scopes: `channels:history`, `channels:read`, `chat:write`, `users:read`, `users:read.email`.
-5) Install/Reinstall the app and invite the bot to `#new-issues`.
+```bash
+PORT=4000
+WEB_ORIGIN=http://localhost:5173
+CORS_ORIGIN=http://localhost:5173
+AGENT_MAX_STEPS=8
 
-Note: for local development, keep ngrok running while testing Slack events. If ngrok stops, Slack can’t reach your API.
+AUTH0_MANAGEMENT_AUDIENCE=https://your-tenant.us.auth0.com/api/v2/
+AUTH0_MANAGEMENT_SCOPE=read:users read:user_idp_tokens update:users delete:refresh_tokens
 
-Required env vars:
-- `SLACK_SIGNING_SECRET`
-- `SLACK_BOT_TOKEN`
-- `SLACK_EVENTS_DEBUG` (optional)
+AUTH0_GITHUB_CONNECTION=github
+AUTH0_SLACK_CONNECTION=slack
+AUTH0_GOOGLE_CONNECTION=google-oauth2
 
-## Demo flow
-1) Login with any supported provider.
-2) Link remaining providers from the Identity Linkage Graph.
-3) Allow-list a repo.
-4) Set `manage_issues` to CONFIRM and `slack_notifier` to STEP_UP.
-5) Run a tool chain like: "Find the open issues in the backend repo, summarize them, and post that summary to Slack."
-6) Approve actions when prompted.
-7) Review the audit log and LLM trace.
-8) Create an unassigned issue and reply in `#new-issues` with "I’ll take it @yourgithubid".
+GROQ_MODEL=llama-3.1-70b-versatile
+ALLOW_LINK_WITHOUT_EMAIL=false
+
+SLACK_SIGNING_SECRET=...
+SLACK_BOT_TOKEN=...
+SLACK_EVENTS_DEBUG=false
+```
+
+## Web (`web/.env`)
+
+Required:
+
+```bash
+VITE_AUTH0_DOMAIN=your-tenant.us.auth0.com
+VITE_AUTH0_CLIENT_ID=...
+VITE_AUTH0_AUDIENCE=https://control-center-api
+```
+
+Recommended / optional:
+
+```bash
+VITE_API_BASE_URL=http://localhost:4000
+
+VITE_AUTH0_CONNECTION_GITHUB=github
+VITE_AUTH0_CONNECTION_SLACK=slack
+VITE_AUTH0_CONNECTION_GOOGLE=google-oauth2
+```
+
+---
+
+## Auth0 Setup Notes
+
+At minimum:
+- Create an Auth0 Application for the web app.
+- Create an API in Auth0 with audience matching `AUTH0_AUDIENCE`.
+- Configure M2M credentials for management API access (`AUTH0_M2M_CLIENT_ID` and `AUTH0_M2M_CLIENT_SECRET`).
+- Enable desired social/workforce connections (GitHub, Slack, Google).
+- Ensure redirect URLs include your web app URL for local/dev environments.
+
+Token Vault requirement alignment:
+- This project expects provider tokens to be managed through Auth0 identity records and management API lookups.
+
+---
+
+## Slack Events Setup
+
+1. Create a Slack app and Bot User.
+2. Enable Event Subscriptions.
+3. Set request URL:
+
+```text
+https://<your-ngrok-id>.ngrok-free.dev/slack/events
+```
+
+4. Subscribe to bot event: `message.channels`.
+5. Add scopes:
+	 - `channels:history`
+	 - `channels:read`
+	 - `chat:write`
+	 - `users:read`
+	 - `users:read.email`
+6. Install app and invite bot to `#new-issues`.
+
+Note: keep ngrok alive during local Slack tests.
+
+---
+
+## Demo Guide and Submission Checklist
+
+### Product demo flow
+1. Login with supported provider.
+2. Link additional providers from Home.
+3. Add repository to approved list.
+4. Configure tool policies (`CONFIRM` and `STEP_UP` for critical actions).
+5. Run a natural-language task requiring multiple tools.
+6. Show blocked path and recovery path.
+7. Complete step-up flow for sensitive action.
+8. Show Activity Audit + AI Activity + Executive Summary.
+
+### Submission checklist
+- Text description with project features and functionality
+- Public demo video link (about 3 minutes)
+- Public repository URL
+- Published app/project link (or clear explanation if not applicable)
+- Optional bonus blog section (250+ words, materially distinct)
+
+---
+
+## Hackathon Judging Criteria Mapping
+
+### Security model
+- Explicit repo allow-lists
+- Risk-based policy gates
+- Step-up sessions for high-stakes actions
+- Token Vault-backed identity/token handling
+
+### User control
+- Visible policy controls
+- Transparent approvals
+- Runtime permission boundaries and blocked reasons
+
+### Technical execution
+- Full-stack implementation (frontend + backend + real integrations)
+- Durable audit and AI activity persistence
+- Robust policy enforcement before execution
+
+### Design
+- Coherent control-plane UX with focused operational surfaces
+- Product-oriented navigation and observability views
+
+### Potential impact
+- Reusable governance model for secure AI tool-calling
+- Practical intermediary pattern for sovereign/local agent runtimes
+
+### Insight value
+- Surfaces real authorization pain points
+- Demonstrates production patterns for agent trust and control
+
+---
+
+## Deployment Notes
+
+### API
+- Build: `npm --prefix api run build`
+- Run: `npm --prefix api run start`
+
+### Web
+- Build: `npm --prefix web run build`
+- Preview: `npm --prefix web run preview`
+
+### Database
+- For production, use `prisma migrate deploy` in CI/CD.
+- Consider moving from SQLite to managed Postgres for scale.
+
+### Security hardening recommendations
+- Restrict CORS to known origins.
+- Rotate M2M secrets regularly.
+- Use separate tenants for dev/staging/prod.
+- Enable stricter rate limits per endpoint.
+
+---
+
+## Troubleshooting
+
+### 401 unauthorized from API
+- Check `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` consistency across API and web.
+- Confirm access token audience matches API config.
+
+### GitHub/Slack token not found
+- Verify identity is linked in Auth0.
+- Verify configured connection names match your tenant.
+
+### Step-up not activating
+- Confirm step-up route is reachable and Auth0 re-auth redirect succeeds.
+- Check local storage return-path values during redirect flow.
+
+### Slack events not arriving
+- Ensure ngrok tunnel is live.
+- Verify signing secret and bot token.
+- Reinstall Slack app after scope changes.
+
+---
+
+## Project Structure
+
+```text
+api/
+	src/
+		index.ts
+		routes.ts
+		tools.ts
+		slack-events.ts
+		agent/
+			engine.ts
+			fanout.ts
+		services/
+			auth0.ts
+			github.ts
+			llm.ts
+			slack.ts
+	prisma/
+		schema.prisma
+
+web/
+	src/
+		App.tsx
+		api.ts
+		components/
+			Dashboard.tsx
+			AccessSection.tsx
+			AllowListSection.tsx
+			PoliciesSection.tsx
+			AgentPanel.tsx
+			AuditSection.tsx
+			LlmAuditSection.tsx
+```
+
+---
 
 ## Roadmap
-- More connectors (Jira, Linear, ServiceNow).
-- Durable run persistence and background workers.
-- Webhooks for policy events and audit streaming.
-- MCP tool registry adapter.
+
+- More enterprise connectors (Jira, Linear, ServiceNow)
+- Background workers for durable async runs
+- Streaming audit webhooks and SIEM-friendly export
+- Policy templates and environment promotion
+- MCP tool registry adapter and fine-grained tool attestation
+
+---
 
 ## License
+
 TBD
