@@ -1,5 +1,12 @@
 export type ToolName = string;
 
+export type AgentTask = {
+  requestId: string;
+  task: string;
+  context?: Record<string, any>;
+  repos?: string[];
+};
+
 export type ToolDefinition = {
   name: ToolName;
   domain?: "github" | "slack";
@@ -53,4 +60,28 @@ export type AgentRun = {
   lastError?: string;
   messages: Array<{ role: "user" | "agent"; text: string }>;
   trace: AgentTraceItem[];
+};
+
+export type FanOutSuccess = {
+  repo: string;
+  statusCode: number;
+  body: any;
+  durationMs: number;
+};
+
+export type FanOutFailure = {
+  repo: string;
+  reason: string;
+  statusCode?: number;
+  body?: any;
+  durationMs?: number;
+};
+
+export type FanOutAggregate = {
+  total: number;
+  successCount: number;
+  failureCount: number;
+  successes: FanOutSuccess[];
+  failures: FanOutFailure[];
+  summary: string;
 };

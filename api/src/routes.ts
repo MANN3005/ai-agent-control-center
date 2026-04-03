@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { Express } from "express";
 import { prisma } from "./db";
-import type { AgentRun } from "./types";
+import type { AgentRun, AgentTask } from "./types";
+import { fanOutToolCall } from "./agent/fanout";
 import {
   AGENT_RUNS,
   LAST_CONTEXT,
@@ -217,6 +218,44 @@ function detectIdentityDomain(
     return "google";
   }
   return "other";
+}
+
+function requestsOrgWideMultiRepo(task: string) {
+  const normalized = String(task || "").toLowerCase();
+  return (
+    normalized.includes("across our entire github org") ||
+    normalized.includes("across all repos") ||
+    normalized.includes("across the org") ||
+    normalized.includes("all repos")
+  );
+}
+
+function buildMultiRepoPlanTemplates(
+  plan: Array<{ tool: string; input: Record<string, any> }>,
+  toolIndex: Map<string, { needsRepo: boolean }>,
+) {
+  const deduped: Array<{ tool: string; input: Record<string, any> }> = [];
+  const seen = new Set<string>();
+
+  for (const step of plan) {
+    const toolDef = toolIndex.get(step.tool);
+    const baseInput = toolDef?.needsRepo
+      ? (() => {
+          const copy = { ...step.input };
+          delete (copy as any).repo;
+          delete (copy as any).repository;
+          delete (copy as any).owner;
+          return copy;
+        })()
+      : step.input;
+
+    const key = `${step.tool}:${JSON.stringify(baseInput)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({ tool: step.tool, input: baseInput });
+  }
+
+  return deduped;
 }
 
 export function registerRoutes(app: Express) {
@@ -1099,17 +1138,45 @@ export function registerRoutes(app: Express) {
 
   app.post("/agent/run", async (req, res) => {
     const userId = (req as any).userId as string;
-    const body = (req.body ?? {}) as any;
+    const body = (req.body ?? {}) as Partial<AgentTask>;
     const requestId =
       typeof body.requestId === "string" ? body.requestId.trim() : "";
     const task = typeof body.task === "string" ? body.task.trim() : "";
     const incomingContext =
       body.context && typeof body.context === "object" ? body.context : {};
+    let repos = Array.isArray(body.repos)
+      ? Array.from(
+          new Set(
+            body.repos
+              .map((repo) => String(repo || "").trim())
+              .filter((repo) => repo.length > 0),
+          ),
+        )
+      : [];
+
+    if (repos.length === 0 && requestsOrgWideMultiRepo(task)) {
+      const allowedRepos = await prisma.allowedResource.findMany({
+        where: {
+          userId,
+          provider: "github",
+          resourceType: "repo",
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      repos = Array.from(
+        new Set(
+          allowedRepos
+            .map((item) => String(item.resourceId || "").trim())
+            .filter(Boolean),
+        ),
+      );
+    }
 
     const extracted = extractContextFromText(task);
     const context = {
       ...incomingContext,
       ...extracted,
+      ...(repos.length > 0 ? { repos, repo: extracted.repo || repos[0] } : {}),
     };
 
     if (!requestId || !task) {
@@ -1188,6 +1255,75 @@ export function registerRoutes(app: Express) {
       }
 
       run.plan = normalizeAgentSteps(guardedSteps, context, toolIndex);
+
+      if (repos.length > 0) {
+        run.plan = buildMultiRepoPlanTemplates(run.plan, toolIndex as any);
+        trace(
+          run,
+          "thought",
+          `Multi-repo orchestration active across ${repos.length} repositories`,
+        );
+        run.status = "RUNNING";
+
+        for (let i = 0; i < run.plan.length; i += 1) {
+          const step = run.plan[i];
+          const stepRecord = getOrCreateStepRecord(run, i, step);
+          run.currentStep = i;
+
+          try {
+            const toolDef = toolIndex.get(step.tool);
+            if (toolDef?.needsRepo) {
+              const aggregated = await fanOutToolCall(
+                userId,
+                `${requestId}:step:${i}`,
+                step.tool,
+                step.input,
+                repos,
+                { confirmed: false, stepUpId: null },
+              );
+
+              stepRecord.status =
+                aggregated.successCount > 0 ? "EXECUTED" : "ERROR";
+              stepRecord.result = aggregated;
+              if (aggregated.failureCount > 0) {
+                stepRecord.reason = aggregated.summary;
+              }
+
+              run.messages.push({ role: "agent", text: aggregated.summary });
+              trace(run, "action", `${step.tool}: ${aggregated.summary}`);
+            } else {
+              const response = await executeToolWithPolicy(
+                userId,
+                `${requestId}:step:${i}`,
+                step.tool,
+                step.input,
+                { confirmed: false, stepUpId: null },
+              );
+
+              stepRecord.status =
+                response.statusCode >= 400 ? "ERROR" : "EXECUTED";
+              stepRecord.result = response.body;
+              if (stepRecord.status === "ERROR") {
+                stepRecord.reason = String(
+                  response.body?.reason ||
+                    response.body?.status ||
+                    "Step failed",
+                );
+              }
+            }
+          } catch (err: any) {
+            const reason = err?.message || "Step failed in multi-repo mode";
+            stepRecord.status = "ERROR";
+            stepRecord.reason = reason;
+            trace(run, "status", reason);
+          }
+        }
+
+        run.status = "COMPLETED";
+        trace(run, "status", "Multi-repo run completed");
+        return res.json({ status: "started", run: formatRunForClient(run) });
+      }
+
       run.status = "RUNNING";
       trace(run, "thought", "Plan ready, executing");
       enqueueAgentRun(run.id);
