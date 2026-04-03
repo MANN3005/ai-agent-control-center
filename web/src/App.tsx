@@ -109,11 +109,11 @@ const navClassName = ({ isActive }: { isActive: boolean }) =>
 const navItems = [
   { to: "/", label: "Home", icon: Home },
   { to: "/access", label: "Access", icon: ShieldCheck },
-  { to: "/allow-list", label: "Allow-list", icon: ListChecks },
+  { to: "/allow-list", label: "Repositories", icon: ListChecks },
   { to: "/policies", label: "Policies", icon: ClipboardList },
   { to: "/agent", label: "Agent", icon: Bot },
   { to: "/audit", label: "Audit", icon: Eye },
-  { to: "/llm-audit", label: "LLM Trace", icon: Sparkles },
+  { to: "/llm-audit", label: "AI Activity", icon: Sparkles },
 ] as const;
 
 export default function App() {
@@ -569,7 +569,7 @@ export default function App() {
       const accessToken = await getApiToken();
       await putPolicies(accessToken, policies);
       await refresh();
-      setPolicyToast("[SYSTEM]: Policy manifest synced to Agent Node.");
+      setPolicyToast("Policy settings updated.");
     } finally {
       setPolicySyncing(false);
     }
@@ -580,7 +580,7 @@ export default function App() {
       setLockdownBusy(true);
       const accessToken = await getApiToken();
       await lockAgentSession(accessToken, "Manual panic lockdown from Access view");
-      setPolicyToast("[SECURITY]: Agent session DISARMED and token revocation requested.");
+      setPolicyToast("Lockdown enabled. Agent session paused.");
       await refresh();
     } finally {
       setLockdownBusy(false);
@@ -592,7 +592,7 @@ export default function App() {
     storeRearmReturnTo(returnTo || "/access");
     storeRearmRequestedAtMs(Date.now());
     storeRearmPending(true);
-    setPolicyToast("[SECURITY]: Re-auth required to re-arm session.");
+    setPolicyToast("Verification required to restore agent access.");
     await loginWithRedirect({
       appState: { returnTo: returnTo || "/access" },
       authorizationParams: {
@@ -912,13 +912,13 @@ export default function App() {
         const accessToken = await getApiToken();
         await armAgentSession(accessToken, getRearmRequestedAtMs());
         if (!active) return;
-        setPolicyToast("[SECURITY]: Agent session re-armed.");
+        setPolicyToast("Agent session restored.");
         await refresh();
       } catch (err: unknown) {
         if (!active) return;
         const message =
           err instanceof Error ? err.message : "Re-arm verification failed.";
-        setPolicyToast(`[SECURITY]: ${message}`);
+        setPolicyToast(`Security update: ${message}`);
       } finally {
         if (active) {
           setLockdownBusy(false);
@@ -1038,6 +1038,8 @@ export default function App() {
       allowedReposCount={allowedReposText ? allowedReposText.split("\n").filter(Boolean).length : 0}
       policiesCount={policies.length}
       auditCount={audit.length}
+      auditEntries={audit}
+      llmEntries={llmAudit}
       stepUpActive={stepUpActive}
       identities={identities}
       userId={me?.userId}
@@ -1121,6 +1123,16 @@ export default function App() {
           agentRun?.status === "NEEDS_INPUT"
         ? "PROCESSING"
         : "STANDBY";
+  const sectionLabelMap: Record<string, string> = {
+    "/": "Home",
+    "/access": "Access",
+    "/allow-list": "Repositories",
+    "/policies": "Policies",
+    "/agent": "Agent",
+    "/audit": "Activity Audit",
+    "/llm-audit": "AI Activity",
+  };
+  const currentSectionLabel = sectionLabelMap[location.pathname] || "Home";
   const identityLabel = user?.email ?? user?.name ?? user?.sub ?? "Account";
   const identityInitial = identityLabel.charAt(0).toUpperCase();
   const startLogin = () =>
@@ -1173,7 +1185,7 @@ export default function App() {
               exit={{ opacity: 0, y: 12 }}
               className="fixed bottom-20 right-5 z-70 rounded-xl border border-amber-300/35 bg-[#15110a]/90 px-4 py-3 font-mono text-sm text-amber-100 shadow-[0_0_24px_rgba(255,184,0,0.2)]"
             >
-              [SECURITY]: Step-up in progress. Complete Auth0 verification.
+              Verification in progress. Complete sign-in to continue.
             </m.div>
           ) : null}
         </AnimatePresence>
@@ -1186,7 +1198,7 @@ export default function App() {
               exit={{ opacity: 0, y: 12 }}
               className="fixed bottom-35 right-5 z-70 rounded-xl border border-rose-300/35 bg-[#1a0f12]/90 px-4 py-3 font-mono text-sm text-rose-100 shadow-[0_0_24px_rgba(244,63,94,0.2)]"
             >
-              [SECURITY]: Re-auth in progress for session re-arm.
+              Verification in progress to restore agent access.
             </m.div>
           ) : null}
         </AnimatePresence>
@@ -1227,18 +1239,18 @@ export default function App() {
           >
             <m.div className="min-w-0 lg:justify-self-start">
               <div className="text-[11px] uppercase tracking-[0.2em] text-fuchsia-200/85">
-                From prompt to action, safely.
+                Secure by design.
               </div>
               <h1
                 className={`mt-1 max-w-[12ch] bg-linear-to-r from-white via-slate-100 to-slate-400 bg-clip-text font-['Syne',sans-serif] text-4xl leading-[0.92] font-extrabold tracking-[-0.035em] text-transparent [text-shadow:0_0_18px_rgba(255,255,255,0.14)] md:text-5xl lg:text-4xl xl:text-5xl ${
                   isAuthenticated ? "opacity-100" : "opacity-80"
                 }`}
               >
-                FlowSnap Control Plane
+                Agent Operations
               </h1>
               <div className="mt-1 inline-flex items-center gap-2 text-[13px] font-medium text-cyan-100/75">
                 <GitBranch className="h-3.5 w-3.5" />
-                Immersive governance for AI actions
+                Secure operations for connected workflows
               </div>
             </m.div>
 
@@ -1294,6 +1306,9 @@ export default function App() {
                   </div>
                   <div className="rounded-full border border-cyan-300/35 bg-cyan-300/12 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-100 shadow-[0_0_10px_rgba(64,224,255,0.2)]">
                     Agent: {agentStatusLabel}
+                  </div>
+                  <div className="rounded-full border border-white/20 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-200">
+                    Section: {currentSectionLabel}
                   </div>
                 </>
               )}
@@ -1366,13 +1381,13 @@ export default function App() {
               <div className="relative z-10 mx-auto w-full max-w-4xl">
                 <div className="rounded-4xl border border-white/20 bg-[#0f1623]/72 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-9">
                   <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-300/12 px-3 py-1 text-xs uppercase tracking-[0.15em] text-cyan-100">
-                    Private Control Plane
+                    Enterprise Agent Governance
                   </div>
                   <h2 className="mt-4 max-w-3xl text-4xl font-black tracking-[-0.03em] text-white md:text-6xl md:leading-[1.02]">
-                    The Secure Control Plane for Autonomous Agents.
+                    Trusted AI operations for security-first teams.
                   </h2>
                   <p className="mt-4 max-w-2xl text-base text-slate-200 md:text-lg">
-                    Link identities, govern tool permissions, and inspect every agent decision before action reaches production.
+                    Enforce policy controls, require verification for sensitive actions, and audit every decision in real time.
                   </p>
 
                   <m.button
@@ -1384,7 +1399,7 @@ export default function App() {
                     onClick={startLogin}
                     className="mt-6 inline-flex items-center gap-2 rounded-full border border-cyan-200/50 bg-cyan-300 px-7 py-3 text-base font-black text-black shadow-[0_0_20px_rgba(6,182,212,0.3)]"
                   >
-                    Enter Control Plane
+                    Start Secure Session
                   </m.button>
 
                   <div className="mt-6 grid gap-3 md:grid-cols-3">
@@ -1396,7 +1411,7 @@ export default function App() {
                         Identity
                       </div>
                       <p className="mt-2 text-xs text-slate-300">
-                        Link GitHub and Slack through the Auth0 Token Vault.
+                        Connect provider identities with secure session boundaries.
                       </p>
                     </div>
                     <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
@@ -1407,7 +1422,7 @@ export default function App() {
                         Governance
                       </div>
                       <p className="mt-2 text-xs text-slate-300">
-                        Apply fine-grained tool policies with explicit risk gates.
+                        Apply granular policies and approvals for high-risk actions.
                       </p>
                     </div>
                     <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
@@ -1418,7 +1433,7 @@ export default function App() {
                         Observability
                       </div>
                       <p className="mt-2 text-xs text-slate-300">
-                        Review full LLM traces and policy audit logs in one timeline.
+                        Track policy outcomes and AI reasoning with complete audit history.
                       </p>
                     </div>
                   </div>

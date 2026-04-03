@@ -5,6 +5,7 @@ import {
   EllipsisVertical,
   Link2,
   Orbit,
+  ScrollText,
   ShieldCheck,
   Shield,
   Boxes,
@@ -12,7 +13,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import type { IdentityEntry } from "../types";
+import type { AuditEntry, IdentityEntry, LlmAuditEntry } from "../types";
 
 const DASHBOARD_OVERVIEW_DISMISSED_KEY = "cc_dashboard_overview_dismissed";
 
@@ -20,6 +21,8 @@ type DashboardProps = {
   allowedReposCount: number;
   policiesCount: number;
   auditCount: number;
+  auditEntries: AuditEntry[];
+  llmEntries: LlmAuditEntry[];
   stepUpActive: boolean;
   identities: IdentityEntry[];
   userId?: string | null;
@@ -37,6 +40,8 @@ export default function Dashboard({
   allowedReposCount,
   policiesCount,
   auditCount,
+  auditEntries,
+  llmEntries,
   stepUpActive,
   identities,
   userId,
@@ -54,6 +59,8 @@ export default function Dashboard({
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem(DASHBOARD_OVERVIEW_DISMISSED_KEY) !== "1";
   });
+  const [executiveSummary, setExecutiveSummary] = useState<string>("");
+  const [summaryGeneratedAt, setSummaryGeneratedAt] = useState<string | null>(null);
 
   function dismissOverview() {
     if (typeof window !== "undefined") {
@@ -129,7 +136,7 @@ export default function Dashboard({
     (identity) => resolveIdentityLabel(identity) === "Slack",
   );
 
-  const heartbeatLabel = stepUpActive ? "AGENT: PROCESSING" : "AGENT: STANDBY";
+  const heartbeatLabel = stepUpActive ? "AGENT: ACTIVE" : "AGENT: STANDBY";
 
   const identityNodes = useMemo(
     () =>
@@ -145,11 +152,57 @@ export default function Dashboard({
   );
 
   const thoughtLines = [
-    "Parsing user intent and repo context",
-    "Computing safe action plan under policy gates",
-    "Preparing approval packet for high-risk operations",
-    "Streaming execution trace with deterministic checkpoints",
+    "Reviewing your request and connected context",
+    "Applying account safeguards before action",
+    "Preparing confirmation for sensitive operations",
+    "Streaming activity updates in real time",
   ];
+
+  function formatSince(date: Date) {
+    return date.toLocaleString();
+  }
+
+  function buildExecutiveSummary() {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recentAudit = auditEntries.filter(
+      (entry) => new Date(entry.createdAt).getTime() >= since.getTime(),
+    );
+    const recentLlm = llmEntries.filter(
+      (entry) => new Date(entry.createdAt).getTime() >= since.getTime(),
+    );
+
+    const blocked = recentAudit.filter(
+      (entry) => String(entry.decision).toUpperCase() !== "ALLOWED",
+    );
+    const blockedByTool = blocked.reduce<Record<string, number>>((acc, entry) => {
+      const tool = entry.toolName || "unknown";
+      acc[tool] = (acc[tool] || 0) + 1;
+      return acc;
+    }, {});
+    const topBlockedTool =
+      Object.entries(blockedByTool).sort((a, b) => b[1] - a[1])[0]?.[0] || "none";
+
+    const policyCalls = recentLlm.filter((entry) => entry.callType === "policy");
+    const policyBlocked = policyCalls.filter(
+      (entry) => String(entry.output?.verdict || "").toUpperCase() === "BLOCKED",
+    ).length;
+
+    const uniqueRuns = new Set(
+      recentLlm.map((entry) => entry.runId).filter(Boolean),
+    ).size;
+
+    const summary = [
+      `Executive Summary (last 24 hours, since ${formatSince(since)}):`,
+      `- ${recentAudit.length} policy evaluations were recorded, with ${blocked.length} blocked or escalated actions.`,
+      `- Most blocked tool: ${topBlockedTool}.`,
+      `- ${recentLlm.length} AI activity events were captured across ${uniqueRuns} active runs.`,
+      `- Policy model checks: ${policyCalls.length} total, ${policyBlocked} blocked verdicts.`,
+      `- Current readiness: ${stepUpActive ? "verification session active" : "verification session inactive"}; sensitive actions may require re-authentication.`,
+    ].join("\n");
+
+    setExecutiveSummary(summary);
+    setSummaryGeneratedAt(new Date().toLocaleTimeString());
+  }
 
   return (
     <LayoutGroup>
@@ -175,15 +228,15 @@ export default function Dashboard({
               <div className="relative pr-10">
                 <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/45 bg-cyan-300/12 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-cyan-100">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  System Overview
+                  Workspace Overview
                 </div>
                 <h3 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-white md:text-3xl">
-                  Your AI Safety Layer.
+                  Security and Visibility, Unified.
                 </h3>
                 <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-200/95">
-                  FlowSnap bridges your GitHub and Slack identities via Auth0. It enforces
-                  the security policies you set below, ensuring your AI Agent only accesses
-                  approved data and asks for permission (Step-Up) during high-risk actions.
+                  Connect your workplace accounts, define clear guardrails, and keep every
+                  important action visible in one place. Sensitive actions still require
+                  explicit confirmation before they run.
                 </p>
               </div>
             </m.section>
@@ -204,19 +257,19 @@ export default function Dashboard({
             </div>
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-400/10 px-3 py-1 text-xs uppercase tracking-[0.16em] text-cyan-100">
               <Orbit className="h-3.5 w-3.5" />
-              Command Surface
+              Operations Hub
             </div>
             <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-white md:text-4xl">
-              Control Plane, Live and Explainable
+              Live Operations at a Glance
             </h2>
             <p className="mt-2 max-w-3xl text-sm text-slate-300">
-              This bento command deck keeps policy posture, execution context, and
-              identity trust graph visible in one glance.
+              Keep account readiness, governance status, and connected services visible in
+              one clear operational view.
             </p>
 
             <div className="glass-panel mt-6 rounded-[1.4rem] border border-white/10 bg-black/35 p-4 font-mono text-sm text-cyan-100">
               <div className="mb-3 text-xs uppercase tracking-[0.15em] text-cyan-300/80">
-                Agent thought stream
+                Live activity stream
               </div>
               <div className="grid gap-2">
                 {thoughtLines.map((line, idx) => (
@@ -267,10 +320,10 @@ export default function Dashboard({
             <div>
               <h3 className="inline-flex items-center gap-2 text-2xl font-semibold text-white">
                 <Link2 className="h-5 w-5 text-cyan-300" />
-                Identity Linkage Graph
+                Connected Accounts
               </h3>
               <p className="mt-1 text-sm text-slate-300">
-                Liquid-glass trust mesh anchored to your primary profile.
+                Manage account connections from your primary profile.
               </p>
             </div>
             {canManageLinks ? (
@@ -298,8 +351,8 @@ export default function Dashboard({
           <div className="mt-5 grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
             <div className="glass-panel relative h-88 overflow-hidden rounded-3xl border border-white/10 bg-black/30">
               <div className="absolute left-1/2 top-1/2 z-10 flex h-26 w-26 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-cyan-200/70 bg-cyan-300/20 text-center text-xs font-semibold tracking-[0.08em] text-cyan-50 shadow-[0_0_32px_rgba(64,224,255,0.45)] backdrop-blur-xl">
-                <span className="text-[10px] uppercase tracking-[0.12em] text-cyan-100/85">Auth0</span>
-                <span>Token Vault</span>
+                <span className="text-[10px] uppercase tracking-[0.12em] text-cyan-100/85">Secure</span>
+                <span>Session Hub</span>
               </div>
               <svg
                 viewBox="0 0 100 100"
@@ -371,7 +424,7 @@ export default function Dashboard({
 
                     {isActiveConnection ? (
                       <div className="pointer-events-none absolute left-1/2 top-[calc(100%+0.45rem)] z-30 w-52 -translate-x-1/2 rounded-xl border border-cyan-300/35 bg-[#0f1724]/95 px-3 py-2 text-center text-[11px] font-medium leading-4 text-cyan-100 opacity-0 shadow-[0_0_20px_rgba(64,224,255,0.24)] transition-opacity duration-180 group-hover:opacity-100">
-                        Active Connection: Click to manage or unlink
+                        Connected account. Click to manage or disconnect.
                       </div>
                     ) : null}
                   </div>
@@ -382,20 +435,20 @@ export default function Dashboard({
             <div className="glass-panel space-y-3 rounded-3xl border border-white/10 bg-black/30 p-4">
               <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-slate-400">
                 <ShieldCheck className="h-4 w-4 text-lime-300" />
-                Trust Posture
+                Account Security
               </div>
               <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
-                Primary ID: {primaryUserId ?? "Not stored yet"}
+                Primary account: {primaryUserId ?? "Not available yet"}
               </div>
               <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
-                Linked identities: {identities.length}
+                Connected accounts: {identities.length}
               </div>
               <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
-                Token coverage: {identities.filter((i) => i.hasAccessToken).length}/{identities.length || 1}
+                Active tokens: {identities.filter((i) => i.hasAccessToken).length}/{identities.length || 1}
               </div>
               {!canManageLinks ? (
                 <div className="rounded-xl border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
-                  Log in with your primary account session to manage links.
+                  Sign in with your primary account to manage connections.
                 </div>
               ) : null}
             </div>
@@ -425,7 +478,7 @@ export default function Dashboard({
                 exit={{ scale: 0.97 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Manage Permissions</div>
+                <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Manage Connection</div>
                 <h4 className="mt-2 text-2xl font-semibold text-white">
                   {resolveIdentityLabel(focusedIdentity)}
                 </h4>
@@ -477,9 +530,50 @@ export default function Dashboard({
         <div className="rounded-3xl border border-white/12 bg-[#151A21]/70 p-4 text-sm text-slate-400 lg:col-span-3">
           <div className="inline-flex items-center gap-2 text-slate-300">
             <Activity className="h-4 w-4 text-cyan-300" />
-            Linking redirects to provider sign-in and returns to your primary session.
+            Connecting an account redirects to that provider and then returns here.
           </div>
         </div>
+
+        <m.section
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 300, damping: 30, delay: 0.08 }}
+          className="glass-panel rounded-4xl border border-white/12 bg-[#151A21]/80 p-6 backdrop-blur-xl lg:col-span-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="inline-flex items-center gap-2 text-2xl font-semibold text-white">
+                <ScrollText className="h-5 w-5 text-cyan-300" />
+                Executive Summary
+              </h3>
+              <p className="mt-1 text-sm text-slate-300">
+                One-click 24-hour operational summary from policy audit and AI activity.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={buildExecutiveSummary}
+              className="rounded-full border border-cyan-300/60 bg-cyan-300/20 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/30"
+            >
+              Generate Summary
+            </button>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4 font-mono text-sm text-slate-200">
+            {executiveSummary ? (
+              <>
+                <pre className="whitespace-pre-wrap leading-6 text-slate-200">{executiveSummary}</pre>
+                {summaryGeneratedAt ? (
+                  <div className="mt-3 text-xs text-slate-400">Updated at {summaryGeneratedAt}</div>
+                ) : null}
+              </>
+            ) : (
+              <div className="text-slate-400">
+                Generate a concise operational report for stakeholders and demo narration.
+              </div>
+            )}
+          </div>
+        </m.section>
       </div>
     </LayoutGroup>
   );

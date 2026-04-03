@@ -42,6 +42,12 @@ export default function PoliciesSection({
     ? "RESTRICTED"
     : "BASELINE";
 
+  const toolDisplayName: Record<string, string> = {
+    github_explorer: "GitHub Explorer",
+    manage_issues: "Issue Manager",
+    slack_notifier: "Slack Notifier",
+  };
+
   const toolMeta: Record<
     string,
     {
@@ -99,16 +105,16 @@ export default function PoliciesSection({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <h2 className="inline-flex items-center gap-2 text-3xl font-black tracking-[-0.03em] text-slate-100">
         <Settings2 className="h-6 w-6 text-fuchsia-300" />
-        Tool Policies
+        Permission Rules
         </h2>
         <div className="glass-panel inline-flex items-center gap-4 rounded-2xl border border-white/10 bg-black/25 px-4 py-2 text-sm">
           <div>
-            <span className="text-slate-400">Global Posture: </span>
+            <span className="text-slate-400">Security posture: </span>
             <span className="font-semibold text-amber-200">{globalPosture}</span>
           </div>
           <div className="h-5 w-px bg-white/10" />
           <div>
-            <span className="text-slate-400">Average Tool Risk: </span>
+            <span className="text-slate-400">Average risk: </span>
             <span className="font-semibold text-cyan-200">{averageRisk}</span>
           </div>
         </div>
@@ -129,7 +135,7 @@ export default function PoliciesSection({
                     const Icon = toolMeta[p.toolName]?.icon || ShieldAlert;
                     return <Icon className="h-4 w-4 text-cyan-300" />;
                   })()}
-                  {p.toolName}
+                  {toolDisplayName[p.toolName] || p.toolName}
                 </div>
                 <div className="mt-1 text-xs text-slate-400">
                   {toolMeta[p.toolName]?.description || "Security control for tool execution behavior."}
@@ -193,7 +199,7 @@ export default function PoliciesSection({
           onClick={onSave}
           className="rounded-full border border-cyan-200/40 bg-linear-to-r from-cyan-300 to-sky-300 px-6 py-2.5 text-sm font-black text-black shadow-[0_0_24px_rgba(64,224,255,0.32)]"
         >
-          Save Policies
+          Apply Changes
         </m.button>
         <m.button
           type="button"

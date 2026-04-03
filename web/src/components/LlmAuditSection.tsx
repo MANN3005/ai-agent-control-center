@@ -137,6 +137,32 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
     return counts;
   }, [entries]);
 
+  const modelCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const entry of entries) {
+      const key = entry.model || "unknown";
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [entries]);
+  const topModel = useMemo(
+    () => Object.entries(modelCounts).sort((a, b) => b[1] - a[1])[0] ?? null,
+    [modelCounts],
+  );
+  const policyBlockedCount = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          entry.callType === "policy" &&
+          String(entry.output?.verdict || "").toUpperCase() === "BLOCKED",
+      ).length,
+    [entries],
+  );
+  const activeRunCount = useMemo(
+    () => new Set(entries.map((entry) => entry.runId).filter(Boolean)).size,
+    [entries],
+  );
+
   const sparkline = useMemo(
     () => ({
       total: buildSparklineSeries(entries, () => true),
@@ -203,10 +229,10 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
     >
       <h2 className="inline-flex items-center gap-2 text-3xl font-black tracking-[-0.03em] text-slate-100">
         <BrainCircuit className="h-6 w-6 text-fuchsia-300" />
-        LLM Trace
+        AI Activity
       </h2>
       <p className="mt-2 text-sm text-slate-300">
-        Shows Groq calls used for planning, recovery, and user-facing replies.
+        Timeline of AI planning, recovery, policy, and response activity.
       </p>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -270,6 +296,28 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
             <div className="text-[11px] text-slate-500">Last 30 min</div>
           </m.div>
         ))}
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Most Used Model</div>
+          <div className="mt-1 text-base font-bold text-slate-100">
+            {topModel ? topModel[0] : "No model data"}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {topModel ? `${topModel[1]} calls` : "Run activity to populate model insights."}
+          </div>
+        </div>
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Policy Blocks</div>
+          <div className="mt-1 text-base font-bold text-rose-200">{policyBlockedCount}</div>
+          <div className="mt-1 text-xs text-slate-400">Policy calls with a blocked verdict.</div>
+        </div>
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Active Runs</div>
+          <div className="mt-1 text-base font-bold text-cyan-100">{activeRunCount}</div>
+          <div className="mt-1 text-xs text-slate-400">Unique run IDs in current activity window.</div>
+        </div>
       </div>
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-3">
@@ -336,7 +384,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
               <th className="px-3 py-3">Request</th>
               <th className="px-3 py-3">Latency</th>
               <th className="px-3 py-3">Tokens</th>
-              <th className="px-3 py-3">Why / Output</th>
+              <th className="px-3 py-3">Summary</th>
               <th className="px-3 py-3">Input</th>
             </tr>
           </thead>
@@ -344,7 +392,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
             {!filtered.length ? (
               <tr>
                 <td colSpan={9} className="px-3 py-4 text-slate-300">
-                  No LLM trace entries match your filters yet.
+                  No AI activity entries match your filters yet.
                 </td>
               </tr>
             ) : null}
@@ -416,7 +464,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
                       onClick={() => setDrawerEntry(entry)}
                       className="rounded-lg border border-cyan-300/45 bg-cyan-300/10 px-2.5 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/20"
                     >
-                      Open prompt/context
+                      Open details
                     </button>
                   </td>
                 </m.tr>
@@ -447,7 +495,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
               className="fixed right-0 top-0 z-50 h-full w-full max-w-2xl overflow-auto border-l border-white/10 bg-[#10131a]/95 p-5 backdrop-blur-xl"
             >
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-xl font-bold text-slate-100">Prompt / Context Inspector</h3>
+                <h3 className="text-xl font-bold text-slate-100">Request Details</h3>
                 <button
                   type="button"
                   onClick={() => setDrawerEntry(null)}

@@ -106,10 +106,10 @@ export default function AccessSection({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-3xl font-black tracking-[-0.03em] text-slate-100">
-            Current Access
+            Access Overview
           </h2>
           <p className="mt-2 text-sm text-slate-300">
-            Real-time view of identities, allow-lists, policy gates, and tool execution readiness.
+            Live view of account connections, repository scope, and execution readiness.
           </p>
         </div>
         <button
@@ -126,8 +126,8 @@ export default function AccessSection({
         <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/45 bg-emerald-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.1em] text-emerald-100">
           <Lock className="h-3.5 w-3.5" />
           {tokenHealth.some((token) => token.hasAccessToken)
-            ? "Protected by Auth0 Vault"
-            : "Vault disconnected"}
+            ? "Protected by secure vault"
+            : "Vault connection required"}
         </div>
         <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
           <button
@@ -139,7 +139,7 @@ export default function AccessSection({
             className="inline-flex items-center gap-2 rounded-full border border-rose-300/55 bg-rose-400/20 px-4 py-2 text-xs font-black uppercase tracking-[0.1em] text-rose-100 shadow-[0_0_18px_rgba(251,113,133,0.25)] disabled:opacity-60"
           >
             <AlertTriangle className="h-3.5 w-3.5" />
-            Session Lockdown
+            Pause agent
           </button>
           <button
             type="button"
@@ -149,7 +149,7 @@ export default function AccessSection({
             disabled={lockdownBusy || accessState?.agentHealth.status !== "DISARMED"}
             className="inline-flex items-center gap-2 rounded-full border border-emerald-300/45 bg-emerald-300/15 px-4 py-2 text-xs font-black uppercase tracking-[0.1em] text-emerald-100 disabled:opacity-60"
           >
-            Re-arm agent
+            Restore agent
           </button>
         </div>
       </div>
@@ -174,17 +174,17 @@ export default function AccessSection({
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-          <div className="text-xs uppercase tracking-[0.14em] text-slate-400">User</div>
+          <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Account</div>
           <div className="mt-2 text-sm font-semibold text-slate-100">
             {accessState?.userId || "-"}
           </div>
         </div>
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-          <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Allowed Tools</div>
+          <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Available Actions</div>
           <div className="mt-2 text-2xl font-black text-emerald-200">{allowedTools}</div>
         </div>
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-          <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Blocked Tools</div>
+          <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Restricted Actions</div>
           <div className="mt-2 text-2xl font-black text-rose-200">{blockedTools}</div>
         </div>
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
@@ -215,27 +215,27 @@ export default function AccessSection({
       </div>
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4">
-        <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-300">Token Health</h3>
+        <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-300">Connection Health</h3>
         <div className="mt-3 grid gap-3 lg:grid-cols-2">
           {tokenHealth.length ? (
             tokenHealth.map((token) => (
               <div key={`${token.provider || "unknown"}-${token.connection || "n/a"}`} className="rounded-xl border border-white/10 bg-slate-900/55 p-3">
-                <div className="flex items-center justify-between gap-2 text-xs uppercase tracking-[0.12em] text-slate-300">
+                <div className="flex items-center justify-between gap-2 text-sm uppercase tracking-[0.08em] text-slate-300">
                   <span>{token.provider || token.connection || "unknown"}</span>
                   <span className="rounded-full border border-cyan-300/45 bg-cyan-300/10 px-2 py-0.5 text-cyan-100">
-                    {token.isolationStatus === "token_isolated" ? "Token Isolated" : "Not linked"}
+                    {token.isolationStatus === "token_isolated" ? "Connected" : "Not linked"}
                   </span>
                 </div>
-                <div className="mt-2 text-xs text-slate-300">Vault status: {token.vaultStatus === "protected_by_auth0_vault" ? "Protected by Auth0 Vault" : "Unavailable"}</div>
-                <div className="mt-1 text-xs text-slate-300">Time until rotation: {formatTtl(token.ttlMs)}</div>
-                <div className="mt-2 text-xs text-slate-400">
-                  Permission scopes are hidden in this build.
+                <div className="mt-2 text-sm text-slate-200">Vault status: {token.vaultStatus === "protected_by_auth0_vault" ? "Protected" : "Unavailable"}</div>
+                <div className="mt-1 text-sm text-slate-200">Time until rotation: {formatTtl(token.ttlMs)}</div>
+                <div className="mt-2 text-sm text-slate-400">
+                  Permission scope details are hidden in this view.
                 </div>
               </div>
             ))
           ) : (
-            <div className="rounded-xl border border-white/10 bg-slate-900/55 p-3 text-xs text-slate-300">
-              No token metadata available yet. Link a provider identity to see vault and TTL details.
+            <div className="rounded-xl border border-white/10 bg-slate-900/55 p-3 text-sm text-slate-300">
+              No token metadata available yet. Connect an account to view details.
             </div>
           )}
         </div>
@@ -243,7 +243,7 @@ export default function AccessSection({
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-          <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-300">Identity State</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-300">Connection State</h3>
           <div className="mt-3 text-sm text-slate-200">
             <div>GitHub linked: {accessState?.identities.hasGithub ? "Yes" : "No"}</div>
             <div>Slack linked: {accessState?.identities.hasSlack ? "Yes" : "No"}</div>
@@ -252,21 +252,21 @@ export default function AccessSection({
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-          <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-300">Resource Access</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-300">Repository Access</h3>
           <div className="mt-3 text-sm text-slate-200">
-            <div>Allow-listed repos: {accessState?.resources.allowedRepoCount || 0}</div>
-            <div className="mt-1 text-xs text-slate-400">
+            <div>Approved repositories: {accessState?.resources.allowedRepoCount || 0}</div>
+            <div className="mt-1 text-sm text-slate-400">
               Verified in account: {accessState?.resources.verifiedAllowedRepoCount || 0}
             </div>
             {(accessState?.resources.unverifiedAllowedRepos || []).length ? (
-              <div className="mt-1 text-xs text-rose-300">
-                Excluded from scan (not in linked GitHub account): {(accessState?.resources.unverifiedAllowedRepos || []).join(", ")}
+              <div className="mt-1 text-sm text-rose-300">
+                Excluded from verification (not in linked GitHub account): {(accessState?.resources.unverifiedAllowedRepos || []).join(", ")}
               </div>
             ) : null}
-            <div className="mt-2 max-h-24 overflow-y-auto rounded-lg border border-white/10 bg-slate-900/40 p-2 text-xs text-slate-300">
+            <div className="mt-2 max-h-24 overflow-y-auto rounded-lg border border-white/10 bg-slate-900/40 p-2 text-sm text-slate-300">
               {(accessState?.resources.allowedRepos || []).length
                 ? (accessState?.resources.allowedRepos || []).join("\n")
-                : "No repositories allow-listed."}
+                : "No approved repositories yet."}
             </div>
             <button
               type="button"
@@ -275,7 +275,7 @@ export default function AccessSection({
               className="mt-3 inline-flex items-center gap-2 rounded-full border border-cyan-300/45 bg-cyan-300/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.1em] text-cyan-100"
             >
               <Radar className={`h-3.5 w-3.5 ${scanActive ? "animate-spin" : ""}`} />
-              {scanActive ? "Scanning permissions..." : "Scan Permissions"}
+              {scanActive ? "Verifying access..." : "Verify Access"}
             </button>
             <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/60 p-2 text-xs">
               {scanActive ? (
@@ -305,7 +305,7 @@ export default function AccessSection({
             <tr className="bg-slate-900/70 text-xs uppercase tracking-[0.14em] text-slate-400">
               <th className="px-3 py-2">Tool</th>
               <th className="px-3 py-2">Mode</th>
-              <th className="px-3 py-2">Risk Heat</th>
+              <th className="px-3 py-2">Risk</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2">Activity</th>
               <th className="px-3 py-2">Blocked reason</th>
@@ -391,14 +391,14 @@ export default function AccessSection({
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/45 p-3 font-mono text-xs text-slate-200">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400">Recent Authorizations</div>
+          <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400">Recent Decisions</div>
           <button
             type="button"
             onClick={downloadAuthorizationFeed}
             className="inline-flex items-center gap-1 rounded-full border border-cyan-300/45 bg-cyan-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-cyan-100"
           >
             <Download className="h-3 w-3" />
-            Download Audit PDF
+            Download Log
           </button>
         </div>
         <div className="max-h-56 space-y-1 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/70 p-3">
@@ -422,8 +422,8 @@ export default function AccessSection({
           <div className="w-full max-w-2xl rounded-2xl border border-white/15 bg-slate-950/95 p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-bold text-slate-100">Policy Evaluation: {selectedTrace.name}</div>
-                <div className="text-xs text-slate-400">Clickable logic trace for governance decisions</div>
+                <div className="text-sm font-bold text-slate-100">Decision details: {selectedTrace.name}</div>
+                <div className="text-xs text-slate-400">Rule-by-rule explanation for this action</div>
               </div>
               <button
                 type="button"
