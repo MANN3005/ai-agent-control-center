@@ -3,7 +3,7 @@ import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { auth } from "express-oauth2-jwt-bearer";
-import { corsOrigin } from "./config";
+import { corsOrigins } from "./config";
 import { registerRoutes } from "./routes";
 import registerSlackEvents from "./slack-events";
 import { resolveCanonicalAuth0UserId } from "./services/auth0";
@@ -13,7 +13,32 @@ const app = express();
 // Render sits behind a proxy/load balancer; trust first hop for real client IP.
 app.set("trust proxy", 1);
 
-app.use(cors({ origin: corsOrigin, credentials: true }));
+function normalizeOrigin(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/\/$/, "");
+}
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser clients and same-origin/server-side calls.
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (corsOrigins.includes(normalizedOrigin)) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+// Preflight must complete before auth/rate-limit middleware.
+app.options("*", cors(corsOptions));
 
 registerSlackEvents(app);
 
@@ -22,6 +47,7 @@ app.use(express.json());
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 120,
+  skip: (req) => req.method === "OPTIONS",
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -29,6 +55,7 @@ const generalLimiter = rateLimit({
 const agentLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 25,
+  skip: (req) => req.method === "OPTIONS",
   standardHeaders: true,
   legacyHeaders: false,
 });

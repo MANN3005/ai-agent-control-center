@@ -1,5 +1,16 @@
-export const corsOrigin =
+const rawCorsOrigin =
   process.env.CORS_ORIGIN || process.env.WEB_ORIGIN || "http://localhost:5173";
+
+function normalizeOrigin(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/\/$/, "");
+}
+
+export const corsOrigins = rawCorsOrigin
+  .split(",")
+  .map((origin) => normalizeOrigin(origin))
+  .filter(Boolean);
 
 export const AGENT_MAX_STEPS = Number(process.env.AGENT_MAX_STEPS || 8);
 
