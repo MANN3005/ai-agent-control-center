@@ -37,8 +37,7 @@ const corsOptions: cors.CorsOptions = {
 };
 
 app.use(cors(corsOptions));
-// Preflight must complete before auth/rate-limit middleware.
-app.options("*", cors(corsOptions));
+// app.use(cors(...)) already handles preflight globally in Express 5.
 
 registerSlackEvents(app);
 
@@ -98,12 +97,19 @@ app.use(async (req, _res, next) => {
 
 registerRoutes(app);
 
-app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (err?.status === 401 || err?.name === "UnauthorizedError") {
-    return res.status(401).json({ status: "unauthorized" });
-  }
-  return next(err);
-});
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    if (err?.status === 401 || err?.name === "UnauthorizedError") {
+      return res.status(401).json({ status: "unauthorized" });
+    }
+    return next(err);
+  },
+);
 
 const PORT = Number(process.env.PORT || 4000);
 app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
