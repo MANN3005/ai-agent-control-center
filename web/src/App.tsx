@@ -228,8 +228,14 @@ export default function App() {
         });
 
       const currentUserId = (meRes as Me)?.userId;
-      if (!primaryUserId && currentUserId && typeof window !== "undefined") {
-        // First successful authenticated profile becomes primary, regardless of provider.
+      const linkInProgress = Boolean(linkProvider || linkPrimaryUserId);
+      if (
+        currentUserId &&
+        typeof window !== "undefined" &&
+        !linkInProgress &&
+        currentUserId !== primaryUserId
+      ) {
+        // Keep canonical primary synced once link handshakes are complete.
         window.localStorage.setItem(PRIMARY_USER_KEY, currentUserId);
         setPrimaryUserId(currentUserId);
       }
@@ -246,7 +252,14 @@ export default function App() {
     } finally {
       setRefreshing(false);
     }
-  }, [authLoading, getApiToken, isAuthenticated, primaryUserId]);
+  }, [
+    authLoading,
+    getApiToken,
+    isAuthenticated,
+    primaryUserId,
+    linkProvider,
+    linkPrimaryUserId,
+  ]);
 
   function storeLinkProvider(provider: string | null) {
     if (typeof window === "undefined") return;
@@ -745,24 +758,13 @@ export default function App() {
     (async () => {
       try {
         await linkSecondaryToPrimary(secondaryUserId, linkProvider);
-        storeLinkProvider(null);
-        storeLinkPrimaryUserId(null);
         if (!active) return;
-        const primaryConnection = getConnectionForAuth0UserId(targetPrimaryUserId);
-        await loginWithRedirect({
-          authorizationParams: {
-            redirect_uri: window.location.origin,
-            audience: AUTH0_AUDIENCE,
-            ...(primaryConnection ? { connection: primaryConnection } : {}),
-            prompt: "login",
-          },
-        });
+        setPolicyToast("Accounts linked. Continue from this session or sign in with any linked provider.");
+        await refresh();
       } catch (err: unknown) {
         if (!active) return;
         const message = err instanceof Error ? err.message : "Link failed.";
         setLinkError(message);
-        storeLinkProvider(null);
-        storeLinkPrimaryUserId(null);
       } finally {
         storeLinkProvider(null);
         storeLinkPrimaryUserId(null);
@@ -781,7 +783,7 @@ export default function App() {
     primaryUserId,
     linking,
     linkSecondaryToPrimary,
-    loginWithRedirect,
+    refresh,
   ]);
 
   useEffect(() => {
