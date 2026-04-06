@@ -1,7 +1,12 @@
 import crypto from "crypto";
 import { prisma } from "../db";
 import { AGENT_MAX_STEPS } from "../config";
-import { getGroqClient } from "../services/llm";
+import {
+  createChatCompletionWithFallback,
+  createJsonObjectCompletion,
+  getGroqClient,
+  getLlmModel,
+} from "../services/llm";
 import {
   getAuth0UserEmail,
   getGithubAccessToken,
@@ -21,7 +26,23 @@ import {
   ToolDefinition,
   ToolName,
 } from "../types";
-import { formatToolListForPrompt, getToolIndex, listAllTools } from "../tools";
+import { getToolIndex, listAllTools } from "../tools";
+import { buildHydrationContext, ContextHydrator } from "./hydrator";
+import { extractFieldsFromText } from "./contextExtractor";
+import {
+  CF,
+  normalizeAction,
+  normalizeFields,
+  resolveRepoFields,
+} from "./fieldRegistry";
+import {
+  getCachedIntentPlan,
+  makeIntentCacheKey,
+  setCachedIntentPlan,
+} from "./intentCache";
+import { resolveIntentToPlan } from "./intentRouter";
+import { rectify } from "./rectify";
+import { validateAllSteps } from "./validator";
 import {
   slackLookupUserByEmail,
   slackOpenDm,
@@ -32,9 +53,88 @@ export const AGENT_RUNS = new Map<string, AgentRun>();
 export const ACTIVE_AGENT_RUNS = new Set<string>();
 export const LAST_CONTEXT = new Map<string, Record<string, any>>();
 const TOOL_CALL_HISTORY = new Map<string, number[]>();
+const GITHUB_LOGIN_CACHE = new Map<string, string>();
 const CIRCUIT_WINDOW_MS = 10_000;
 const CIRCUIT_LIMIT = 5;
 
+const TOOL_CALL_OUTPUT_RULES = `
+----------------------------------------------------------------------
+TOOL CALL OUTPUT RULES - FOLLOW THESE PRECISELY:
+
+1. Always respond with a single JSON object in this exact shape:
+  {
+    "tool": "<exact_mcp_tool_name>",
+    "input": { <parameters> }
+  }
+  No explanation. No markdown. No extra keys. Just this JSON.
+
+2. For owner/repo:
+  - If the user wrote "owner/repo" together (e.g. "h202201297/my-app"),
+    set input.owner = "h202201297" and input.repo = "my-app" separately.
+  - Never put "owner/repo" as a combined string in input.repo.
+  - If owner is not in the user message, leave input.owner out entirely.
+    The system will inject it from the user's GitHub account.
+
+3. For issue_number and pull_number:
+  - Always output as a number (integer), never a string.
+  - "#1" -> 1, "issue 42" -> 42, "PR #5" -> 5.
+
+4. For state when user says "delete", "remove", "close", or "resolve"
+  an issue:
+  - The correct tool is github_update_issue.
+  - Set input.state = "closed". Never use "deleted" or "removed".
+
+5. For state when user says "reopen":
+  - The correct tool is github_update_issue.
+  - Set input.state = "open".
+
+6. Never output null, undefined, or empty string "" for any field.
+  If you do not have a value for an optional field, omit that field
+  entirely from input.
+
+7. Never invent values the user did not provide.
+  If a required field is missing from the user message, omit it.
+  The system will ask the user for it.
+
+TOOL NAME REFERENCE:
+github_add_issue_comment, github_create_branch, github_create_issue,
+github_create_or_update_file, github_create_pull_request,
+github_create_pull_request_review, github_create_repository,
+github_fork_repository, github_get_file_contents, github_get_issue,
+github_get_pull_request, github_get_pull_request_comments,
+github_get_pull_request_files, github_get_pull_request_reviews,
+github_get_pull_request_status, github_list_commits,
+github_list_issues, github_list_pull_requests,
+github_merge_pull_request, github_push_files, github_search_code,
+github_search_issues, github_search_repositories, github_search_users,
+github_update_issue, github_update_pull_request_branch
+----------------------------------------------------------------------`;
+
+async function resolveGithubLogin(userId: string): Promise<string | null> {
+  const cached = GITHUB_LOGIN_CACHE.get(userId);
+  if (cached) return cached;
+
+  try {
+    const accessToken = await getGithubAccessToken(userId);
+    const response = await fetch("https://api.github.com/user", {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { login?: string };
+    const login = String(payload?.login || "").trim();
+    if (!login) return null;
+    GITHUB_LOGIN_CACHE.set(userId, login);
+    return login;
+  } catch {
+    return null;
+  }
+}
+
+export async function getGithubUsernameFromVault(userId: string) {
+  return resolveGithubLogin(userId);
 export type LlmAuditEntry = {
   id: string;
   userId: string;
@@ -209,6 +309,73 @@ export function safeJsonParse(value: string, fallback: any) {
   }
 }
 
+function buildCompactToolSummary(tool: ToolDefinition) {
+  const schema = (tool.inputSchema || {}) as Record<string, any>;
+  const required = Array.isArray(schema.required)
+    ? (schema.required as string[])
+    : [];
+  const properties =
+    schema.properties && typeof schema.properties === "object"
+      ? Object.keys(schema.properties as Record<string, any>).slice(0, 12)
+      : [];
+  const compactDescription = String(tool.description || "No description")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 220);
+
+  return (
+    `Tool: ${tool.name}\n` +
+    `Description: ${compactDescription || "No description"}\n` +
+    `Required: ${required.join(", ") || "none"}\n` +
+    `Properties: ${properties.join(", ") || "none"}`
+  );
+}
+
+function buildToolPromptBlock(tools: ToolDefinition[], maxChars = 6500) {
+  const lines: string[] = [];
+  let used = 0;
+
+  for (const tool of tools) {
+    const line = buildCompactToolSummary(tool);
+    const cost = line.length + 2;
+    if (used + cost > maxChars) break;
+    lines.push(line);
+    used += cost;
+  }
+
+  const omitted = tools.length - lines.length;
+  if (omitted > 0) {
+    lines.push(`... ${omitted} additional tools omitted for token safety.`);
+  }
+
+  return lines.join("\n\n");
+}
+
+function slimPlanningContext(context: Record<string, any>) {
+  const entries = Object.entries(context || {}).slice(0, 20);
+  const reduced: Record<string, any> = {};
+
+  for (const [key, value] of entries) {
+    if (typeof value === "string") {
+      reduced[key] = value.slice(0, 200);
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      reduced[key] = value;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      reduced[key] = value.slice(0, 10);
+      continue;
+    }
+    if (value && typeof value === "object") {
+      reduced[key] = "[object]";
+    }
+  }
+
+  return reduced;
+}
+
 export function formatRunForClient(run: AgentRun) {
   return {
     id: run.id,
@@ -223,90 +390,261 @@ export function formatRunForClient(run: AgentRun) {
   };
 }
 
-export async function generateAgentPlan(
+async function generateLegacyPlan(
   task: string,
   context: Record<string, any>,
   tools: ToolDefinition[],
-  meta?: { userId?: string; runId?: string; requestId?: string },
 ) {
   const client = getGroqClient();
-  const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
-  const toolList = formatToolListForPrompt(tools);
+  const model = getLlmModel("gemini-3.1-pro-preview");
+  const toolDescriptions = buildToolPromptBlock(tools, 6500);
 
-  const system =
-    "You are a Policy-Gated Agent. Only output JSON with keys {steps, question}. " +
-    "You solve tasks by planning tool calls. Available tools are listed below. " +
-    "You operate within an allow-list; if a repo is not provided, do not assume it. " +
-    "If required info is missing, return steps: [] and a short question asking the user. " +
-    "Use input fields: resource (repos|issues|prs), repo, state (open|closed|all), action (create|close|reopen|comment), issueNumbers, title, body, comment, assignee, assigneeEmail, channel, text, limit. " +
-    "Use github_explorer for listing repos, issues, or PRs. " +
-    "Use manage_issues for create/close/reopen/comment actions. " +
-    "Use slack_notifier to post or summarize to Slack. " +
-    "Do not use slack_notifier unless the user explicitly asks to post/send/share in Slack or provides a Slack channel (like #general). " +
-    "Only include assigneeEmail when the user explicitly provides a real email address. Never invent, guess, or use placeholder emails (like example.com). " +
-    "Never assume a tool call succeeded without output. " +
-    "Never use issueNumbers with 0. " +
-    "If policy requires CONFIRM or STEP_UP, the system will pause; do not plan around bypassing approvals. " +
-    "Summarize your plan with minimal steps. " +
-    `\n\nTOOLS:\n${toolList}`;
+  const system = `You are an elite, Schema-Driven AI Agent Planner. Only output JSON with keys {steps, question}.
+You MUST choose from the EXACT tool names listed below. 
 
-  const user = JSON.stringify({ task, context });
+OPERATIONAL GUIDELINES (CRITICAL FOR MISSION SUCCESS):
+1. HIGH-UTILITY QUERIES: Never use wildcard ("*") or blank queries for search tools unless explicitly commanded. Extract specific nouns from the user's task to use as search terms.
+2. CHAIN OF THOUGHT: If a user asks to "summarize the backend repo issues", you must first plan a step to SEARCH for the backend repo, then a step to LIST its issues.
+3. FAIL GRACEFULLY: If you do not have enough specific information to form a HIGH-UTILITY query (e.g., you need a repo name but only have vague instructions), DO NOT guess. 
 
-  const completion = await client.chat.completions.create({
+If you lack critical parameters, return an empty steps array: [] and write a highly specific, polite 'question' asking the user for the exact missing parameter.
+
+AVAILABLE DYNAMIC TOOLS:
+${toolDescriptions}
+
+${TOOL_CALL_OUTPUT_RULES}`;
+
+  const user = JSON.stringify({ task, context: slimPlanningContext(context) });
+
+  const completion = await createJsonObjectCompletion(
+    client,
     model,
-    messages: [
+    [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    response_format: { type: "json_object" },
-    temperature: 0.2,
-  });
+    0.2,
+  );
 
   const content = completion.choices[0]?.message?.content || "";
   const parsed = safeJsonParse(content, null);
+
+  if (parsed && typeof parsed.tool === "string") {
+    parsed.steps = [
+      {
+        tool: String(parsed.tool),
+        input:
+          parsed.input && typeof parsed.input === "object"
+            ? parsed.input
+            : {},
+      },
+    ];
+  }
 
   if (!parsed || !Array.isArray(parsed.steps)) {
     throw new Error("Agent plan missing steps");
   }
 
-  recordLlmAudit({
-    userId: String(meta?.userId || ""),
-    runId: meta?.runId || null,
-    requestId: meta?.requestId || null,
-    callType: "plan",
-    model,
-    input: {
-      task,
-      context,
-      tools: tools.map((t) => t.name),
-    },
-    output: {
-      question: typeof parsed.question === "string" ? parsed.question : "",
-      stepsCount: Array.isArray(parsed.steps) ? parsed.steps.length : 0,
-      steps: parsed.steps,
-    },
-  });
+  const normalizedTask = String(task || "").toLowerCase();
+  const isFindRepoIntent =
+    /\b(find|search|locate)\b/.test(normalizedTask) &&
+    /\brepo\b|\brepository\b/.test(normalizedTask);
+  if (isFindRepoIntent) {
+    const firstStep = (parsed.steps[0] || {}) as AgentStep;
+    const firstTool = String(firstStep.tool || "").trim();
+    if (firstTool === "intent_list_my_repos") {
+      const extractedQuery =
+        normalizedTask.match(/(?:named|name)\s+([a-z0-9._-]+)/i)?.[1] ||
+        normalizedTask.match(/(?:repo|repository)\s+([a-z0-9._-]+)/i)?.[1] ||
+        "";
+
+      parsed.steps = [
+        {
+          tool: "intent_find_my_repos",
+          input: {
+            query: extractedQuery || String(context.followUpText || "").trim(),
+          },
+        },
+      ];
+    }
+  }
+
+  for (const step of parsed.steps as AgentStep[]) {
+    const toolName = String(step?.tool || "").toLowerCase();
+    const query =
+      step?.input && typeof step.input === "object"
+        ? String((step.input as any).query || "").trim()
+        : "";
+    if (toolName.includes("search") && (query === "*" || query === "")) {
+      return {
+        steps: [] as AgentStep[],
+        question:
+          "I want to search, but I need specific keywords or a repository name to avoid returning thousands of irrelevant results. What exactly should I look for?",
+      };
+    }
+  }
+
+  let finalQuestion =
+    typeof parsed.question === "string" ? parsed.question.trim() : "";
+
+  if (parsed.steps.length === 0 && finalQuestion.length < 15) {
+    finalQuestion =
+      "I don't have enough specific parameters to safely execute that task. Could you clarify exactly what resources or names I should target?";
+  }
 
   return {
     steps: parsed.steps as AgentStep[],
-    question: typeof parsed.question === "string" ? parsed.question.trim() : "",
+    question: finalQuestion,
   };
 }
 
-function taskRequestsSlackDelivery(task: string) {
-  const normalized = task.toLowerCase();
+function getStepMissingFields(
+  step: AgentStep,
+  toolInfo: ToolDefinition | undefined,
+) {
+  const inputSchema = toolInfo?.inputSchema as any;
+  const requiredFields: string[] = Array.isArray(inputSchema?.required)
+    ? inputSchema.required
+    : [];
+  return requiredFields.filter((field) => {
+    const value = step.input?.[field];
+    return value === undefined || value === null || String(value).trim() === "";
+  });
+}
+
+function questionForField(field: string) {
+  if (field === "repo") return "Which repository should I use (owner/repo)?";
+  if (field === "name") return "What should the repository be named?";
+  if (field === "query")
+    return "What exact repo name or keyword should I search for?";
+  if (field === "action")
+    return "What issue action should I take (create, close, reopen, or comment)?";
+  if (field === "branchName") return "What should the new branch be named?";
+  if (field === "fromBranch")
+    return "Which existing branch should I branch from?";
+  if (field === "title") return "What should the issue title be?";
+  if (field === "issueNumbers")
+    return "Which issue number(s) should I target?";
+  if (field === "comment") return "What comment should I post?";
+  return `I need the ${field} to proceed.`;
+}
+
+function normalizeStepInput(input: Record<string, any>) {
+  return resolveRepoFields(normalizeFields(input || {}));
+}
+
+function normalizeStep(step: AgentStep): AgentStep {
+  return {
+    ...step,
+    input: normalizeStepInput(step.input || {}),
+  };
+}
+
+function mergeTextExtractedContext(
+  step: AgentStep,
+  textExtractedContext: Record<string, any>,
+): AgentStep {
+  const merged = { ...step, input: { ...(step.input || {}) } };
+  for (const [key, value] of Object.entries(textExtractedContext || {})) {
+    if ((merged.input as any)[key] == null && value != null) {
+      (merged.input as any)[key] = value;
+    }
+  }
+  merged.input = normalizeStepInput(merged.input);
+  return merged;
+}
+
+function isRateLimitError(err: any) {
+  const message = String(err?.message || "");
   return (
-    /\bslack\b/.test(normalized) ||
-    /#[a-z0-9_-]+/.test(normalized) ||
-    /\bchannel\b/.test(normalized) ||
-    /\b(post|send|share|notify)\b/.test(normalized)
+    Number((err as any)?.status) === 429 ||
+    Number((err as any)?.statusCode) === 429 ||
+    /\b429\b/.test(message)
   );
 }
 
-export function applyTaskIntentGuards(task: string, steps: AgentStep[]) {
-  if (taskRequestsSlackDelivery(task)) {
-    return steps;
+export async function generateAgentPlan(
+  task: string,
+  context: Record<string, any>,
+  tools: ToolDefinition[],
+  userId?: string,
+) {
+  const extractedFromText = normalizeStepInput(extractFieldsFromText(task));
+  const textExtractedContext = normalizeStepInput({
+    ...(context.textExtractedContext || {}),
+    ...extractedFromText,
+  });
+  context.textExtractedContext = textExtractedContext;
+
+  const toolNames = tools.map((tool) => tool.name);
+  const cacheKey = makeIntentCacheKey(task, context, toolNames);
+  const cached = getCachedIntentPlan(cacheKey);
+  if (cached) {
+    return cached;
   }
+
+  let routed;
+  try {
+    routed = await resolveIntentToPlan(task, context, tools);
+
+    if (!routed.steps.length) {
+      routed = await generateLegacyPlan(task, context, tools);
+    }
+
+    routed.steps = (routed.steps || []).map((step: AgentStep) =>
+      normalizeStep(step),
+    );
+  } catch (err: any) {
+    if (isRateLimitError(err)) {
+      return {
+        steps: [] as AgentStep[],
+        question:
+          "The planning model is temporarily rate-limited. Please retry in a few seconds, or rephrase with explicit repo and action.",
+      };
+    }
+    throw err;
+  }
+
+  if (userId && routed.steps.length) {
+    const previousOutputs =
+      context.previousStepOutputs && typeof context.previousStepOutputs === "object"
+        ? context.previousStepOutputs
+        : {};
+    const hydrationContext = await buildHydrationContext(userId, previousOutputs);
+    const hydrator = new ContextHydrator();
+    routed.steps = hydrator.hydrate(routed.steps, tools, hydrationContext);
+  }
+
+  routed.steps = (routed.steps || []).map((step: AgentStep) =>
+    normalizeStep(step),
+  );
+  routed.steps = (routed.steps || []).map((step: AgentStep) =>
+    mergeTextExtractedContext(step, textExtractedContext),
+  );
+
+  const validation = validateAllSteps(routed.steps, tools);
+  if (!validation.valid && validation.stepIndex !== undefined) {
+    const failingStep = routed.steps[validation.stepIndex];
+    if (failingStep) {
+      failingStep.missingFields = validation.missingField
+        ? [String(validation.missingField)]
+        : [];
+      failingStep.clarificationQuestion =
+        validation.missingFieldQuestion ||
+        questionForField(String(validation.missingField || "input"));
+    }
+  }
+
+  const output = {
+    steps: routed.steps,
+    question:
+      validation.valid === false
+        ? validation.missingFieldQuestion || routed.question
+        : routed.question,
+  };
+
+  setCachedIntentPlan(cacheKey, output);
+  return output;
   return steps.filter(
     (step) => String(step?.tool || "").toLowerCase() !== "slack_notifier",
   );
@@ -318,45 +656,54 @@ export function normalizeAgentSteps(
   toolIndex: Map<string, ToolDefinition>,
 ) {
   const normalized: AgentStep[] = [];
-  const placeholderValues = new Set([
-    "assignee",
-    "user",
-    "username",
-    "someone",
-    "channel",
-    "slack",
-    "slack-channel",
-    "slack_channel",
-  ]);
-  const hasManagedCreateWithNotify = steps.some((step) => {
-    if (
-      String(step?.tool || "")
-        .trim()
-        .toLowerCase() !== "manage_issues"
-    ) {
-      return false;
-    }
-    const input =
-      step?.input && typeof step.input === "object" ? step.input : {};
-    const action = String((input as any).action || "").trim();
-    return (
-      action === "create" &&
-      Boolean((input as any).assigneeEmail || context.assigneeEmail)
-    );
-  });
 
   for (const step of steps) {
-    const rawTool = String(step?.tool || "")
-      .trim()
-      .toLowerCase();
-    const tool = rawTool as ToolName;
-    const toolInfo = toolIndex.get(tool);
-    if (!tool || !toolInfo) {
-      throw new Error("Agent selected an unsupported tool");
+    const toolName = String(step?.tool || "").trim();
+    const toolInfo = toolIndex.get(toolName);
+    if (!toolInfo) {
+      throw new Error(`Agent selected an unsupported tool: ${toolName}`);
     }
 
-    const input =
-      step?.input && typeof step.input === "object" ? step.input : {};
+    const input = normalizeStepInput(
+      step?.input && typeof step.input === "object" ? step.input : {},
+    );
+
+    if (toolName === "intent_manage_issue" && !input.action) {
+      if (context.action) {
+        input.action = String(context.action);
+      } else if (typeof context.followUpText === "string") {
+        const follow = context.followUpText.toLowerCase();
+        if (follow.includes("create")) input.action = "create";
+        else if (follow.includes("close")) input.action = "close";
+        else if (follow.includes("delete") || follow.includes("remove")) {
+          input.action = "close";
+        }
+        else if (follow.includes("reopen")) input.action = "reopen";
+        else if (follow.includes("comment")) input.action = "comment";
+      }
+    }
+
+    if (input.action) {
+      input.action = normalizeAction(String(input.action));
+    }
+
+    if (!input.repo && typeof context.followUpText === "string") {
+      const followUpText = context.followUpText.trim();
+      if (followUpText && followUpText.includes("/")) {
+        input.repo = followUpText;
+      }
+    }
+
+    if (
+      String(toolName).toLowerCase().includes("search") &&
+      !input.query &&
+      typeof context.followUpText === "string"
+    ) {
+      const followUpText = context.followUpText.trim();
+      if (followUpText) {
+        input.query = followUpText;
+      }
+    }
 
     if (toolInfo.needsRepo) {
       if (!input.repo && context.repo) input.repo = context.repo;
@@ -364,109 +711,30 @@ export function normalizeAgentSteps(
         input.repo = context.repoCandidate;
       }
       if (!input.repo) {
-        throw new Error("Missing repo for repo-scoped tool");
-      }
-    }
-
-    if (tool === "github_explorer") {
-      if (!input.resource) input.resource = "repos";
-      const resource = String(input.resource || "repos");
-      if ((resource === "issues" || resource === "prs") && !input.repo) {
-        if (context.repo) input.repo = context.repo;
-        if (!input.repo && context.repoCandidate) {
-          input.repo = context.repoCandidate;
-        }
-        if (!input.repo) {
-          throw new Error("Missing repo for exploration");
-        }
-      }
-      if (!input.state && context.state) {
-        input.state = context.state;
-      }
-    }
-
-    if (tool === "manage_issues") {
-      const action = String(input.action || "").trim();
-
-      if (action === "create") {
-        if (!input.title && context.title) input.title = context.title;
-        if (!input.body && context.body) input.body = context.body;
-        if (!input.assignee && context.assignee) {
-          input.assignee = context.assignee;
-        }
-        if (!input.assigneeEmail && context.assigneeEmail) {
-          input.assigneeEmail = context.assigneeEmail;
-        }
-        if (
-          typeof input.assignee === "string" &&
-          input.assignee.includes("@")
-        ) {
-          input.assigneeEmail = input.assignee;
-          delete (input as any).assignee;
-        }
-        if (typeof input.assignee === "string") {
-          const normalizedAssignee = input.assignee.trim().toLowerCase();
-          if (placeholderValues.has(normalizedAssignee)) {
-            delete (input as any).assignee;
-          }
-        }
-        if (
-          typeof input.assigneeEmail === "string" &&
-          !input.assigneeEmail.includes("@")
-        ) {
-          delete (input as any).assigneeEmail;
-        }
-        if (typeof input.assigneeEmail === "string") {
-          const normalizedEmail = input.assigneeEmail.trim().toLowerCase();
-          if (
-            normalizedEmail.endsWith("@example.com") ||
-            normalizedEmail.includes("noreply") ||
-            normalizedEmail.includes("placeholder")
-          ) {
-            delete (input as any).assigneeEmail;
-          }
-        }
-      }
-
-      if (action === "close" || action === "reopen" || action === "comment") {
-        if (!input.issueNumbers && Array.isArray(context.issueNumbers)) {
-          input.issueNumbers = context.issueNumbers;
-        }
-        const issueNumbers = Array.isArray(input.issueNumbers)
-          ? input.issueNumbers
-              .map((n: any) => Number(n))
-              .filter((n: number) => Number.isInteger(n) && n > 0)
+        const missing = Array.isArray(step.missingFields)
+          ? [...step.missingFields]
           : [];
-        if (issueNumbers.length) {
-          input.issueNumbers = issueNumbers;
-        }
-      }
-
-      if (action === "comment") {
-        if (!input.comment && context.comment) input.comment = context.comment;
-      }
-    }
-
-    if (tool === "slack_notifier") {
-      if (!input.action) input.action = "post";
-      if (hasManagedCreateWithNotify && !input.channel) {
+        if (!missing.includes("repo")) missing.push("repo");
+        normalized.push({
+          tool: toolName,
+          input,
+          hydratedFields: step.hydratedFields,
+          missingFields: missing,
+          clarificationQuestion:
+            step.clarificationQuestion ||
+            "Which repository should I use (owner/repo)?",
+        });
         continue;
       }
-      if (typeof input.channel === "string") {
-        const normalizedChannel = input.channel.trim().toLowerCase();
-        if (placeholderValues.has(normalizedChannel)) {
-          delete (input as any).channel;
-        }
-      }
-      if (!input.channel && context.channel) {
-        input.channel = context.channel;
-      }
-      if (!input.channel) {
-        input.channel = "new-issues";
-      }
     }
 
-    normalized.push({ tool, input });
+    normalized.push({
+      tool: toolName,
+      input,
+      hydratedFields: step.hydratedFields,
+      missingFields: step.missingFields,
+      clarificationQuestion: step.clarificationQuestion,
+    });
   }
 
   return normalized;
@@ -531,8 +799,64 @@ export function extractContextFromText(text: string) {
   if (emailMatch) context.assigneeEmail = emailMatch[0].trim();
   const commentMatch = text.match(/comment\s+["“”'‘’]?([^"”'‘’]+)["“”'‘’]?/i);
   if (commentMatch) context.comment = commentMatch[1].trim();
+  const branchNameMatch = text.match(
+    /branch\s+(?:named|name|called)?\s*([A-Za-z0-9._/-]+)/i,
+  );
+  if (branchNameMatch) context.branchName = branchNameMatch[1].trim();
+  const fromBranchMatch = text.match(/(?:from|off|based on)\s+([A-Za-z0-9._/-]+)/i);
+  if (fromBranchMatch) context.fromBranch = fromBranchMatch[1].trim();
+  const lower = text.toLowerCase();
+  if (lower.includes("create issue") || lower.includes("open issue")) {
+    context.action = "create";
+  } else if (
+    lower.includes("close issue") ||
+    lower.includes("delete issue") ||
+    lower.includes("remove issue")
+  ) {
+    context.action = "close";
+  } else if (lower.includes("reopen issue")) {
+    context.action = "reopen";
+  } else if (lower.includes("comment on issue") || lower.startsWith("comment ")) {
+    context.action = "comment";
+  }
   const channelMatch = text.match(/#([A-Za-z0-9_-]+)/);
   if (channelMatch) context.channel = channelMatch[1];
+
+  const namedRepoMatch = text.match(
+    /(?:repo|repository)\s+(?:named|name)\s+([A-Za-z0-9._-]+)/i,
+  );
+  if (namedRepoMatch) {
+    const repoName = namedRepoMatch[1].trim();
+    context.repoCandidate = repoName;
+    context.query = repoName;
+  }
+
+  const githubUserMatch = text.match(
+    /(?:github\s*(?:user(?:name)?|handle)|username)\s*[:=-]?\s*([A-Za-z0-9-]+)/i,
+  );
+  if (githubUserMatch) {
+    context.githubUsername = githubUserMatch[1].trim();
+    context.owner = githubUserMatch[1].trim();
+    context.query = `user:${githubUserMatch[1].trim()}`;
+  }
+
+  const githubUserQueryMatch = text.match(/\buser:([A-Za-z0-9-]+)\b/i);
+  if (githubUserQueryMatch) {
+    const username = githubUserQueryMatch[1].trim();
+    context.githubUsername = username;
+    context.owner = username;
+    context.query = `user:${username}`;
+  }
+
+  const githubOrgMatch = text.match(
+    /(?:github\s*(?:org|organization))\s*[:=-]?\s*([A-Za-z0-9-]+)/i,
+  );
+  if (githubOrgMatch) {
+    context.githubOrg = githubOrgMatch[1].trim();
+    context.owner = githubOrgMatch[1].trim();
+    context.query = `org:${githubOrgMatch[1].trim()}`;
+  }
+
   if (!context.repo && !context.repoCandidate) {
     const candidateMatch = text.match(/\b(?:on|in)\s+([A-Za-z0-9_.-]+)\b/i);
     const candidate = candidateMatch?.[1] || "";
@@ -558,6 +882,18 @@ export function getSmallTalkReply(text: string) {
   return null;
 }
 
+export function parsePendingFieldAnswer(field: string, userAnswer: string) {
+  const trimmed = String(userAnswer || "").trim();
+  if (!trimmed) return trimmed;
+
+  if (field === CF.ISSUE_NUMBER || field === CF.PR_NUMBER) {
+    const num = parseInt(trimmed.replace(/[^0-9]/g, ""), 10);
+    return Number.isNaN(num) ? trimmed : num;
+  }
+
+  return trimmed;
+}
+
 function isMeaningfulTitle(title: string) {
   const normalized = title.trim().toLowerCase();
   if (normalized.length < 3) return false;
@@ -565,73 +901,43 @@ function isMeaningfulTitle(title: string) {
   return !banned.includes(normalized);
 }
 
-export function getMissingInputQuestion(
+export async function getMissingInputQuestion(
   steps: AgentStep[],
   context: Record<string, any>,
   toolIndex: Map<string, ToolDefinition>,
-): string | null {
-  const placeholderValues = new Set([
-    "assignee",
-    "user",
-    "username",
-    "someone",
-    "channel",
-    "slack",
-    "slack-channel",
-    "slack_channel",
-  ]);
+  userId?: string,
+): Promise<string | null> {
+  void userId;
+  const workingSteps = steps.map((step) => ({
+    ...step,
+    input: normalizeStepInput(step.input || {}),
+  }));
 
-  for (const step of steps) {
-    const toolName = String(step.tool || "").toLowerCase();
-    const toolInfo = toolIndex.get(toolName);
-    if (toolInfo?.needsRepo) {
-      if (!step.input?.repo && !context.repo && !context.repoCandidate) {
-        return "Which repo should I use? Please share it as owner/repo (it must be in the allow-list).";
+  if (typeof context.followUpText === "string" && context.followUpText.trim()) {
+    const followUp = context.followUpText.trim();
+    for (const step of workingSteps) {
+      if (!step.input[CF.REPO_NAME] && followUp.includes("/")) {
+        step.input[CF.REPO_NAME] = followUp;
       }
-    }
-    if (toolName === "github_explorer") {
-      const resource = String(step.input?.resource || "repos");
-      if ((resource === "issues" || resource === "prs") && !step.input?.repo) {
-        if (!context.repo && !context.repoCandidate) {
-          return "Which repo should I inspect? Provide owner/repo.";
-        }
+      if (!step.input[CF.BRANCH_NAME] && !followUp.includes("/")) {
+        step.input[CF.BRANCH_NAME] = followUp;
       }
-    }
-    if (toolName === "manage_issues") {
-      const action = String(step.input?.action || "");
-      if (action === "create") {
-        const title = String(step.input?.title || context.title || "").trim();
-        if (!title || !isMeaningfulTitle(title)) {
-          return "What issue title should I use?";
-        }
+      if (!step.input[CF.QUERY] && !followUp.includes("/")) {
+        step.input[CF.QUERY] = followUp;
       }
-      if (action === "close" || action === "reopen" || action === "comment") {
-        const issueNumbers = Array.isArray(step.input?.issueNumbers)
-          ? step.input.issueNumbers
-          : context.issueNumbers;
-        if (!Array.isArray(issueNumbers) || issueNumbers.length === 0) {
-          return "Which issue numbers should I update?";
-        }
-      }
-      if (action === "comment") {
-        const comment = String(
-          step.input?.comment || context.comment || "",
-        ).trim();
-        if (!comment) {
-          return "What comment should I add to those issues?";
-        }
-      }
-    }
-    if (
-      toolName === "slack_notifier" &&
-      !context.channel &&
-      (!step.input?.channel ||
-        (typeof step.input.channel === "string" &&
-          placeholderValues.has(step.input.channel.trim().toLowerCase())))
-    ) {
-      continue;
+      step.input = normalizeStepInput(step.input);
     }
   }
+
+  const validation = validateAllSteps(workingSteps, Array.from(toolIndex.values()));
+  if (!validation.valid) {
+    return validation.missingFieldQuestion || `I need the ${validation.missingField} to proceed.`;
+  }
+
+  for (let i = 0; i < steps.length; i += 1) {
+    steps[i].input = workingSteps[i].input;
+  }
+
   return null;
 }
 
@@ -641,11 +947,10 @@ export async function generateRecoveryAction(
   failedStep: AgentStep,
   error: string,
   tools: ToolDefinition[],
-  meta?: { userId?: string; runId?: string; requestId?: string },
 ) {
   const client = getGroqClient();
-  const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
-  const toolList = formatToolListForPrompt(tools);
+  const model = getLlmModel("gemini-3.1-pro-preview");
+  const toolList = buildToolPromptBlock(tools, 3500);
 
   const system =
     "You help recover from a failed tool call. Only output JSON with keys {action, step, question, rationale}. " +
@@ -655,41 +960,25 @@ export async function generateRecoveryAction(
     "If rationale, keep it short and avoid chain-of-thought. " +
     `Use only these tools:\n${toolList}`;
 
-  const user = JSON.stringify({ task, context, failedStep, error });
+  const user = JSON.stringify({
+    task,
+    context: slimPlanningContext(context),
+    failedStep,
+    error: String(error || "").slice(0, 300),
+  });
 
-  const completion = await client.chat.completions.create({
+  const completion = await createJsonObjectCompletion(
+    client,
     model,
-    messages: [
+    [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    response_format: { type: "json_object" },
-    temperature: 0.2,
-  });
+    0.2,
+  );
 
   const content = completion.choices[0]?.message?.content || "";
   const parsed = safeJsonParse(content, null);
-
-  recordLlmAudit({
-    userId: String(meta?.userId || ""),
-    runId: meta?.runId || null,
-    requestId: meta?.requestId || null,
-    callType: "recovery",
-    model,
-    input: {
-      task,
-      context,
-      failedStep,
-      error,
-      tools: tools.map((t) => t.name),
-    },
-    output: {
-      action: parsed?.action || "abort",
-      rationale: parsed?.rationale || "",
-      question: parsed?.question || "",
-      step: parsed?.step || null,
-    },
-  });
 
   if (!parsed || typeof parsed.action !== "string") {
     return { action: "abort" as const };
@@ -705,10 +994,109 @@ export async function generateAgentReply(
   task: string,
   step: AgentStep,
   result: any,
-  meta?: { userId?: string; runId?: string; requestId?: string },
 ) {
+  if (step.tool === "intent_create_repository") {
+    const fullName = String(result?.result?.fullName || "").trim();
+    const htmlUrl = String(result?.result?.htmlUrl || "").trim();
+    const name = String(result?.result?.name || step.input?.name || "").trim();
+
+    if (fullName && htmlUrl) {
+      return `Created repository ${fullName}. ${htmlUrl}`;
+    }
+    if (fullName) {
+      return `Created repository ${fullName}.`;
+    }
+    if (name) {
+      return `Created repository ${name}.`;
+    }
+    return "Repository created successfully.";
+  }
+
+  if (step.tool === "intent_delete_branch") {
+    const repo = String(result?.result?.repo || step.input?.repo || "").trim();
+    const branchName = String(
+      result?.result?.branchName || step.input?.branchName || "",
+    ).trim();
+
+    if (repo && branchName) {
+      return `Deleted branch ${branchName} from ${repo}.`;
+    }
+    return "Branch deleted successfully.";
+  }
+
+  if (step.tool === "intent_create_branch") {
+    const repo = String(result?.result?.repo || step.input?.repo || "").trim();
+    const branchName = String(
+      result?.result?.branchName || step.input?.branchName || "",
+    ).trim();
+    const fromBranch = String(
+      result?.result?.fromBranch || step.input?.fromBranch || "",
+    ).trim();
+
+    if (repo && branchName && fromBranch) {
+      return `Created branch ${branchName} in ${repo} from ${fromBranch}.`;
+    }
+    if (repo && branchName) {
+      return `Created branch ${branchName} in ${repo}.`;
+    }
+    return "Branch created successfully.";
+  }
+
+  if (step.tool === "intent_list_my_repos") {
+    const repos = Array.isArray(result?.result?.repos)
+      ? (result.result.repos as Array<{ fullName?: string; name?: string }>)
+      : [];
+
+    if (!repos.length) {
+      return "I could not find any repositories for your connected GitHub account.";
+    }
+
+    const names = repos
+      .map((repo) => repo.fullName || repo.name || "")
+      .filter(Boolean)
+      .join(", ");
+
+    return `I found ${repos.length} repositories: ${names}`;
+  }
+
+  if (step.tool === "intent_find_my_repos") {
+    const repos = Array.isArray(result?.result?.repos)
+      ? (result.result.repos as Array<{ fullName?: string; name?: string }>)
+      : [];
+
+    if (!repos.length) {
+      return "I could not find any repositories matching that name in your account.";
+    }
+
+    const names = repos
+      .map((repo) => repo.fullName || repo.name || "")
+      .filter(Boolean)
+      .join(", ");
+
+    return `I found ${repos.length} matching repositories: ${names}`;
+  }
+
+  if (step.tool === "intent_list_repo_issues") {
+    const issues = Array.isArray(result?.result?.issues)
+      ? (result.result.issues as Array<{ number?: number; title?: string; state?: string }>)
+      : [];
+    const state = String(result?.result?.state || step.input?.state || "open");
+    const repo = String(result?.result?.repo || step.input?.repo || "this repository");
+
+    if (!issues.length) {
+      return `I found no ${state} issues in ${repo}.`;
+    }
+
+    const preview = issues
+      .slice(0, 8)
+      .map((issue) => `#${issue.number} ${issue.title || "(untitled)"}`)
+      .join(", ");
+
+    return `I found ${issues.length} ${state} issues in ${repo}: ${preview}`;
+  }
+
   const client = getGroqClient();
-  const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
+  const model = getLlmModel("gemini-3.1-pro-preview");
 
   const system =
     "You are an assistant summarizing a tool call result for the user. " +
@@ -717,25 +1105,17 @@ export async function generateAgentReply(
 
   const user = JSON.stringify({ task, step, result });
 
-  const completion = await client.chat.completions.create({
+  const completion = await createChatCompletionWithFallback(
+    client,
     model,
-    messages: [
+    [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    temperature: 0.2,
-  });
+    0.2,
+  );
 
   const content = completion.choices[0]?.message?.content || "";
-  recordLlmAudit({
-    userId: String(meta?.userId || ""),
-    runId: meta?.runId || null,
-    requestId: meta?.requestId || null,
-    callType: "reply",
-    model,
-    input: { task, step, result },
-    output: { reply: content.trim() || "Step completed." },
-  });
   return content.trim() || "Step completed.";
 }
 
@@ -754,6 +1134,36 @@ export function getOrCreateStepRecord(
   };
   run.steps[index] = record;
   return record;
+}
+
+export function getToolAwareValidationPrompt(tool: string, reason: string) {
+  const normalizedTool = String(tool || "").toLowerCase();
+  const normalizedReason = String(reason || "").toLowerCase();
+
+  if (
+    normalizedTool === "intent_create_branch" ||
+    normalizedTool === "intent_delete_branch"
+  ) {
+    if (normalizedReason.includes("(branchname)")) {
+      return "I could not complete the branch action because the branch name was invalid or not found. Please provide a valid branch name and I will retry.";
+    }
+    if (normalizedReason.includes("(repo)")) {
+      return "I need the target repository (owner/repo) to continue the branch action.";
+    }
+    return "I could not complete the branch action because required fields were invalid. Please provide the repository and branch details and I will retry.";
+  }
+
+  if (normalizedTool === "intent_manage_issue") {
+    if (normalizedReason.includes("(title)")) {
+      return "I could not create the issue because the title was invalid. Please provide a clear issue title and I will retry.";
+    }
+    if (normalizedReason.includes("(issue_number)")) {
+      return "I need a valid issue number to continue. Which issue number should I use?";
+    }
+    return "I could not complete the issue action because required fields were invalid. Please provide the missing issue details and I will retry.";
+  }
+
+  return "I could not complete this action because required fields were invalid. Please provide the missing details and I will retry.";
 }
 
 export function enqueueAgentRun(runId: string) {
@@ -784,8 +1194,28 @@ export async function runAgentLoop(runId: string) {
       }
 
       const stepIndex = run.currentStep;
-      const step = run.plan[stepIndex];
+      let step = normalizeStep(run.plan[stepIndex]);
+      run.plan[stepIndex] = step;
       const stepRecord = getOrCreateStepRecord(run, stepIndex, step);
+
+      const availableTools = await listAllTools(run.userId);
+      const validation = validateAllSteps([step], availableTools);
+      if (!validation.valid) {
+        run.status = "NEEDS_INPUT";
+        run.pendingFieldCapture = {
+          field: String(validation.missingField || ""),
+          stepIndex,
+          frozenSteps: run.plan.map((planStep) => normalizeStep(planStep)),
+        };
+        trace(run, "status", "Waiting for user input");
+        run.messages.push({
+          role: "agent",
+          text:
+            validation.missingFieldQuestion ||
+            `I need ${validation.missingField} to proceed.`,
+        });
+        return;
+      }
 
       const slackAction = String(step.input?.action || "post");
       if (
@@ -810,6 +1240,7 @@ export async function runAgentLoop(runId: string) {
           step.input.text = buildGithubSummary(repos, 10);
         } else if (Array.isArray(issues) && issues.length) {
           const stateLabel = String(previous?.input?.state || "open");
+          step.input.text = buildIssuesSummary(issues, 10, stateLabel);
           const limit = Number(step.input?.limit || 10);
           const repo = String(previous?.input?.repo || run.context.repo || "");
           step.input.text = buildIssuesSummary(
@@ -832,6 +1263,47 @@ export async function runAgentLoop(runId: string) {
       }
 
       trace(run, "action", `Step ${stepIndex + 1}: calling ${step.tool}`);
+
+      const githubUsername = await getGithubUsernameFromVault(run.userId);
+      const rectifySourceMessage = String(
+        run.context.followUpText || run.task || "",
+      );
+      const rectified = rectify(
+        { tool: String(step.tool || ""), input: { ...(step.input || {}) } },
+        rectifySourceMessage,
+        githubUsername || undefined,
+      );
+
+      if (rectified.type === "NEEDS_INPUT") {
+        run.status = "NEEDS_INPUT";
+        run.pendingRectify = {
+          frozenToolCall: rectified.frozenToolCall || {
+            tool: String(step.tool || ""),
+            input: { ...(step.input || {}) },
+          },
+          missingField: String(rectified.missingField || ""),
+        };
+        trace(run, "status", "Waiting for rectified required input");
+        run.messages.push({
+          role: "agent",
+          text:
+            rectified.question ||
+            `I need ${rectified.missingField || "additional input"} to proceed.`,
+        });
+        return;
+      }
+
+      if (rectified.toolCall) {
+        step = {
+          ...step,
+          tool: rectified.toolCall.tool,
+          input: rectified.toolCall.input,
+        };
+        run.plan[stepIndex] = step;
+        stepRecord.tool = step.tool;
+        stepRecord.input = step.input;
+      }
+      run.pendingRectify = null;
 
       const response = await executeToolWithPolicy(
         run.userId,
@@ -908,8 +1380,40 @@ export async function runAgentLoop(runId: string) {
           return;
         }
 
+        if (
+          String(responseBody.reason || "")
+            .toLowerCase()
+            .startsWith("issues disabled in repository:")
+        ) {
+          run.status = "NEEDS_INPUT";
+          trace(run, "status", "Repository has issues disabled");
+          run.messages.push({
+            role: "agent",
+            text:
+              "That repository has GitHub Issues disabled, so I cannot create an issue there. Share another repository with Issues enabled, and I will retry.",
+          });
+          return;
+        }
+
+        if (
+          String(responseBody.reason || "")
+            .toLowerCase()
+            .startsWith("input validation failed")
+        ) {
+          run.status = "NEEDS_INPUT";
+          trace(run, "status", "Waiting for required issue input");
+          run.messages.push({
+            role: "agent",
+            text: getToolAwareValidationPrompt(
+              step.tool,
+              String(responseBody.reason || ""),
+            ),
+          });
+          return;
+        }
+
         if (stepRecord.retries < 1) {
-          const tools = await listAllTools();
+          const tools = await listAllTools(run.userId);
           const toolIndex = getToolIndex(tools);
           const recovery = await generateRecoveryAction(
             run.task,
@@ -917,11 +1421,6 @@ export async function runAgentLoop(runId: string) {
             step,
             responseBody.reason || "Tool error",
             tools,
-            {
-              userId: run.userId,
-              runId: run.id,
-              requestId: `${run.id}:${stepIndex + 1}`,
-            },
           );
           if (recovery.rationale) {
             trace(run, "status", `Recovery: ${recovery.rationale}`);
@@ -981,11 +1480,7 @@ export async function runAgentLoop(runId: string) {
       trace(run, "status", `Step ${stepIndex + 1}: executed`);
 
       try {
-        const reply = await generateAgentReply(run.task, step, responseBody, {
-          userId: run.userId,
-          runId: run.id,
-          requestId: `${run.id}:${stepIndex + 1}`,
-        });
+        const reply = await generateAgentReply(run.task, step, responseBody);
         run.messages.push({ role: "agent", text: reply });
       } catch {
         run.messages.push({ role: "agent", text: "Step completed." });
@@ -1004,6 +1499,25 @@ export async function executeToolWithPolicy(
   approval: { confirmed: boolean; stepUpId: string | null },
   executionContext?: { githubToken?: string | null },
 ) {
+  input = normalizeStepInput(input || {});
+  if ((input as any)[CF.BRANCH_NAME] && !(input as any).branchName) {
+    (input as any).branchName = (input as any)[CF.BRANCH_NAME];
+  }
+  if ((input as any)[CF.BASE_BRANCH] && !(input as any).fromBranch) {
+    (input as any).fromBranch = (input as any)[CF.BASE_BRANCH];
+  }
+  if ((input as any)[CF.ISSUE_NUMBER] && !(input as any).issueNumber) {
+    (input as any).issueNumber = (input as any)[CF.ISSUE_NUMBER];
+  }
+  if (
+    typeof (input as any)[CF.REPO_OWNER] === "string" &&
+    typeof (input as any)[CF.REPO_NAME] === "string" &&
+    !(String((input as any)[CF.REPO_NAME] || "").includes("/"))
+  ) {
+    (input as any)[CF.REPO_NAME] = `${String((input as any)[CF.REPO_OWNER]).trim()}/${String((input as any)[CF.REPO_NAME]).trim()}`;
+  }
+
+  const tools = await listAllTools(userId);
   const tools = await listAllTools();
   const toolIndex = getToolIndex(tools);
   const toolInfo = toolIndex.get(tool);
@@ -1118,6 +1632,48 @@ export async function executeToolWithPolicy(
       if (matches.length === 1 && matches[0].fullName) {
         resolvedRepo = matches[0].fullName;
         (input as any).repo = resolvedRepo;
+      } else if (matches.length === 0) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: `Repo not found for name: ${resolvedRepo}`,
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: {
+            status: "denied",
+            reason: "Repo not found in your GitHub list. Use owner/repo.",
+          },
+        };
+      } else if (matches.length > 1) {
+        const reasoning = buildDecisionReason(tool, input);
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            requestId,
+            toolName: tool,
+            inputJson: JSON.stringify(input),
+            decision: "DENIED",
+            reason: `Multiple repos matched name: ${resolvedRepo}`,
+            reasoning,
+            executed: false,
+          },
+        });
+        return {
+          statusCode: 400,
+          body: {
+            status: "denied",
+            reason: "Multiple repos matched that name. Use owner/repo.",
+          },
+        };
         if (!(input as any).repository) {
           (input as any).repository = resolvedRepo;
         }
@@ -1153,11 +1709,6 @@ export async function executeToolWithPolicy(
         if (!candidate) return false;
         if (candidate === resolvedLower) return true;
         if (!candidate.includes("/") && candidate === resolvedName) return true;
-        if (
-          candidate.includes("/") &&
-          candidate.split("/").pop() === resolvedName
-        )
-          return true;
         return false;
       });
       if (match) {
@@ -1365,6 +1916,48 @@ export async function executeToolWithPolicy(
         if (matches.length === 1 && matches[0].fullName) {
           repo = matches[0].fullName;
           (input as any).repo = repo;
+        } else if (matches.length === 0) {
+          const reasoning = buildDecisionReason(tool, input);
+          await prisma.auditLog.create({
+            data: {
+              userId,
+              requestId,
+              toolName: tool,
+              inputJson: JSON.stringify(input),
+              decision: "DENIED",
+              reason: `Repo not found for name: ${repo}`,
+              reasoning,
+              executed: false,
+            },
+          });
+          return {
+            statusCode: 400,
+            body: {
+              status: "denied",
+              reason: "Repo not found in your GitHub list. Use owner/repo.",
+            },
+          };
+        } else if (matches.length > 1) {
+          const reasoning = buildDecisionReason(tool, input);
+          await prisma.auditLog.create({
+            data: {
+              userId,
+              requestId,
+              toolName: tool,
+              inputJson: JSON.stringify(input),
+              decision: "DENIED",
+              reason: `Multiple repos matched name: ${repo}`,
+              reasoning,
+              executed: false,
+            },
+          });
+          return {
+            statusCode: 400,
+            body: {
+              status: "denied",
+              reason: "Multiple repos matched that name. Use owner/repo.",
+            },
+          };
         }
       }
 
@@ -1391,11 +1984,6 @@ export async function executeToolWithPolicy(
           if (!candidate) return false;
           if (candidate === repoLower) return true;
           if (!candidate.includes("/") && candidate === repoName) return true;
-          if (
-            candidate.includes("/") &&
-            candidate.split("/").pop() === repoName
-          )
-            return true;
           return false;
         });
         if (match) {
@@ -1643,6 +2231,27 @@ export async function executeToolWithPolicy(
 
     return { statusCode: 200, body: { status: "executed", result } };
   } catch (err: any) {
+    const rawMessage = String(err?.message || "Execution failed");
+    const inputValidationMatch = rawMessage.match(
+      /^INPUT_VALIDATION:([^:]+):(.+)$/,
+    );
+    const issuesDisabledMatch = rawMessage.match(
+      /^ISSUES_DISABLED:([^:]+):(.+)$/,
+    );
+    const genericIssuesDisabled =
+      !issuesDisabledMatch &&
+      /issues\s+has\s+been\s+disabled\s+in\s+this\s+repository/i.test(
+        rawMessage,
+      );
+    const repoFromInput = String((input as any)?.repo || "").trim();
+    const normalizedReason = inputValidationMatch
+      ? `Input validation failed (${inputValidationMatch[1]}): ${inputValidationMatch[2]}`
+      : issuesDisabledMatch
+        ? `Issues disabled in repository: ${issuesDisabledMatch[1]}`
+        : genericIssuesDisabled
+          ? `Issues disabled in repository: ${repoFromInput || "unknown repo"}`
+          : rawMessage;
+
     await prisma.auditLog.create({
       data: {
         userId,
@@ -1650,15 +2259,20 @@ export async function executeToolWithPolicy(
         toolName: tool,
         inputJson: JSON.stringify(input),
         decision: "ERROR",
-        reason: err?.message || "Execution failed",
+        reason: normalizedReason,
         reasoning: buildDecisionReason(tool, input),
         executed: false,
       },
     });
 
     return {
-      statusCode: 500,
-      body: { status: "error", reason: err?.message || "Execution failed" },
+      statusCode:
+        inputValidationMatch
+          ? 400
+          : issuesDisabledMatch || genericIssuesDisabled
+            ? 409
+            : 500,
+      body: { status: "error", reason: normalizedReason },
     };
   }
 }
@@ -1694,6 +2308,7 @@ export async function applySlackAutoFill(run: AgentRun, stepIndex: number) {
   }
   if (Array.isArray(issues) && issues.length) {
     const stateLabel = String(previous?.input?.state || "open");
+    step.input.text = buildIssuesSummary(issues, 10, stateLabel);
     const limit = Number(step.input?.limit || 10);
     const repo = String(previous?.input?.repo || run.context.repo || "");
     step.input.text = buildIssuesSummary(

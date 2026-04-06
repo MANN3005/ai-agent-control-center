@@ -4,6 +4,14 @@ export type Policy = {
   mode: "AUTO" | "CONFIRM" | "STEP_UP";
 };
 
+export type ToolCatalogEntry = {
+  toolName: string;
+  needsRepo: boolean;
+  defaultRisk: "LOW" | "MEDIUM" | "HIGH";
+  defaultMode: "AUTO" | "CONFIRM" | "STEP_UP";
+  description?: string | null;
+};
+
 export type Me = {
   userId: string;
   hasGithub: boolean;

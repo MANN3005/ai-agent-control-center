@@ -16,6 +16,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
     "@prisma/client": "^6.19.2",
     "auth0": "^4.23.0",
     "cors": "^2.8.6",

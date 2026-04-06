@@ -32,7 +32,13 @@ export type AgentStepStatus =
   | "ERROR"
   | "APPROVAL_REQUIRED";
 
-export type AgentStep = { tool: ToolName; input: Record<string, any> };
+export type AgentStep = {
+  tool: ToolName;
+  input: Record<string, any>;
+  hydratedFields?: string[];
+  missingFields?: string[];
+  clarificationQuestion?: string;
+};
 
 export type AgentStepRecord = AgentStep & {
   status: AgentStepStatus;
@@ -57,6 +63,15 @@ export type AgentRun = {
   steps: AgentStepRecord[];
   currentStep: number;
   pendingStepIndex: number | null;
+  pendingFieldCapture?: {
+    field: string;
+    stepIndex: number;
+    frozenSteps: AgentStep[];
+  } | null;
+  pendingRectify?: {
+    frozenToolCall: { tool: string; input: Record<string, any> };
+    missingField: string;
+  } | null;
   lastError?: string;
   messages: Array<{ role: "user" | "agent"; text: string }>;
   trace: AgentTraceItem[];
