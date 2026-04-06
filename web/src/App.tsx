@@ -80,6 +80,8 @@ const SLACK_CONNECTION =
   (import.meta.env.VITE_AUTH0_CONNECTION_SLACK as string) || "slack";
 const GOOGLE_CONNECTION =
   (import.meta.env.VITE_AUTH0_CONNECTION_GOOGLE as string) || "google-oauth2";
+const AUTH0_AUDIENCE =
+  (import.meta.env.VITE_AUTH0_AUDIENCE as string) || "https://control-center-api";
 
 function getConnectionForAuth0UserId(userId?: string | null) {
   if (!userId) return null;
@@ -175,7 +177,7 @@ export default function App() {
     () =>
       getAccessTokenSilently({
         authorizationParams: {
-          audience: "https://control-center-api",
+          audience: AUTH0_AUDIENCE,
         },
       }),
     [getAccessTokenSilently],
@@ -238,6 +240,9 @@ export default function App() {
       } else {
         setPolicies(DEFAULTS);
       }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Session refresh failed.";
+      setPolicyToast(`Session refresh issue: ${message}`);
     } finally {
       setRefreshing(false);
     }
@@ -597,7 +602,7 @@ export default function App() {
       appState: { returnTo: returnTo || "/access" },
       authorizationParams: {
         redirect_uri: window.location.origin,
-        audience: "https://control-center-api",
+        audience: AUTH0_AUDIENCE,
         prompt: "login",
         max_age: 0,
         acr_values:
@@ -621,7 +626,7 @@ export default function App() {
       appState: { returnTo: returnTo || "/agent" },
       authorizationParams: {
         redirect_uri: window.location.origin,
-        audience: "https://control-center-api",
+        audience: AUTH0_AUDIENCE,
         prompt: "login",
         max_age: 0,
         acr_values:
@@ -679,7 +684,7 @@ export default function App() {
     void loginWithRedirect({
       authorizationParams: {
         redirect_uri: window.location.origin,
-        audience: "https://control-center-api",
+        audience: AUTH0_AUDIENCE,
         connection,
         prompt: "login",
       },
@@ -727,27 +732,10 @@ export default function App() {
     if (!isAuthenticated || !linkProvider || !secondaryUserId || !targetPrimaryUserId) return;
     if (linking) return;
     if (secondaryUserId === targetPrimaryUserId) {
-      let active = true;
-      setLinking(true);
-      setLinkError(null);
-
-      (async () => {
-        try {
-          await linkSecondaryToPrimary(secondaryUserId, linkProvider);
-        } catch (err: unknown) {
-          if (!active) return;
-          const message = err instanceof Error ? err.message : "Link failed.";
-          setLinkError(message);
-        } finally {
-          storeLinkProvider(null);
-          storeLinkPrimaryUserId(null);
-          setLinking(false);
-        }
-      })();
-
-      return () => {
-        active = false;
-      };
+      // Ignore no-op self-link attempts caused by returning with the primary session.
+      setLinking(false);
+      setLinkError("Still signed into primary account. Sign in with the secondary account to complete linking.");
+      return;
     }
 
     let active = true;
@@ -764,7 +752,7 @@ export default function App() {
         await loginWithRedirect({
           authorizationParams: {
             redirect_uri: window.location.origin,
-            audience: "https://control-center-api",
+            audience: AUTH0_AUDIENCE,
             ...(primaryConnection ? { connection: primaryConnection } : {}),
             prompt: "login",
           },
@@ -811,7 +799,7 @@ export default function App() {
     void loginWithRedirect({
       authorizationParams: {
         redirect_uri: window.location.origin,
-        audience: "https://control-center-api",
+        audience: AUTH0_AUDIENCE,
         ...(primaryConnection ? { connection: primaryConnection } : {}),
         prompt: "login",
       },
@@ -1139,7 +1127,7 @@ export default function App() {
     loginWithRedirect({
       authorizationParams: {
         redirect_uri: window.location.origin,
-        audience: "https://control-center-api",
+        audience: AUTH0_AUDIENCE,
       },
     });
 
