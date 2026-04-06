@@ -25,6 +25,25 @@ type McpTool = {
 };
 
 type RiskLevel = ToolDefinition["defaultRisk"];
+const MCP_DISCOVERY_TIMEOUT_MS = Number(process.env.MCP_DISCOVERY_TIMEOUT_MS || 2500);
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
 
 function getListedToolsArray(listed: any): McpTool[] {
   if (Array.isArray(listed)) return listed as McpTool[];
@@ -105,11 +124,22 @@ async function listProviderTools(
   userId: string,
   provider: SupportedProvider,
 ): Promise<Array<{ provider: SupportedProvider; tool: McpTool }>> {
-  const client = await createMcpClient(userId, provider);
+  const client = await withTimeout(
+    createMcpClient(userId, provider),
+    MCP_DISCOVERY_TIMEOUT_MS,
+    `[MCP] connect:${provider}`,
+  ).catch((error) => {
+    console.warn(`[MCP] Discovery connect fallback for ${provider}:`, error);
+    return null;
+  });
   if (!client) return [];
 
   try {
-    const listed = (await client.listTools()) as any;
+    const listed = (await withTimeout(
+      client.listTools() as Promise<any>,
+      MCP_DISCOVERY_TIMEOUT_MS,
+      `[MCP] listTools:${provider}`,
+    )) as any;
     const tools = getListedToolsArray(listed);
 
     return tools
@@ -847,7 +877,10 @@ export async function listAllTools(userId?: string): Promise<ToolDefinition[]> {
   const discovered = await Promise.all([
     listProviderTools(userId, "github"),
     listProviderTools(userId, "slack"),
-  ]);
+  ]).catch((error) => {
+    console.warn("[MCP] Discovery fallback to local tools:", error);
+    return [[], []] as Array<Array<{ provider: SupportedProvider; tool: McpTool }>>;
+  });
 
   const mappedMcpTools = discovered.flat().map(({ provider, tool: mcpTool }) => {
     const defaultRisk = inferRiskLevel(mcpTool);
