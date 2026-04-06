@@ -5,6 +5,7 @@ import type { AgentRun, AgentTask } from "./types";
 import { fanOutToolCall } from "./agent/fanout";
 import {
   AGENT_RUNS,
+  LLM_AUDIT_LOGS,
   LAST_CONTEXT,
   applySlackAutoFill,
   createRunId,
@@ -34,6 +35,8 @@ import {
   hasSlackIdentity,
   revokeAllAuth0VaultTokens,
 } from "./services/auth0";
+import { getGithubAccessToken } from "./services/auth0";
+import { githubListRepos } from "./services/github";
 import { getToolIndex, listAllTools } from "./tools";
 
 const LinkAccountBody = z.object({
@@ -353,7 +356,7 @@ export function registerRoutes(app: Express) {
           const repos = await githubListRepos(githubToken);
           const accessibleRepoSet = new Set(
             repos
-              .map((repo) =>
+              .map((repo: any) =>
                 String(repo.fullName || "")
                   .trim()
                   .toLowerCase(),
@@ -689,10 +692,6 @@ export function registerRoutes(app: Express) {
     if (!parsed.success) return res.status(400).json(parsed.error);
 
     const { primaryUserId, secondaryUserId, provider } = parsed.data;
-    if (userId !== secondaryUserId) {
-      return res
-        .status(403)
-        .json({ status: "denied", reason: "Must link from secondary account" });
     const canLinkFromSecondary = Boolean(
       secondaryUserId && userId === secondaryUserId,
     );
@@ -1240,7 +1239,7 @@ export function registerRoutes(app: Express) {
       }
 
       run.pendingFieldCapture = null;
-      run.plan = normalizeAgentSteps(guardedSteps, context, toolIndex);
+      run.plan = normalizeAgentSteps(run.plan, context, toolIndex);
 
       if (repos.length > 0) {
         run.plan = buildMultiRepoPlanTemplates(run.plan, toolIndex as any);

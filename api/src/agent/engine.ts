@@ -135,6 +135,8 @@ async function resolveGithubLogin(userId: string): Promise<string | null> {
 
 export async function getGithubUsernameFromVault(userId: string) {
   return resolveGithubLogin(userId);
+}
+
 export type LlmAuditEntry = {
   id: string;
   userId: string;
@@ -645,9 +647,6 @@ export async function generateAgentPlan(
 
   setCachedIntentPlan(cacheKey, output);
   return output;
-  return steps.filter(
-    (step) => String(step?.tool || "").toLowerCase() !== "slack_notifier",
-  );
 }
 
 export function normalizeAgentSteps(
@@ -1518,7 +1517,6 @@ export async function executeToolWithPolicy(
   }
 
   const tools = await listAllTools(userId);
-  const tools = await listAllTools();
   const toolIndex = getToolIndex(tools);
   const toolInfo = toolIndex.get(tool);
   if (!toolInfo) {

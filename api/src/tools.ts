@@ -2,6 +2,19 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ToolDefinition } from "./types";
 import { getGithubAccessToken, getSlackAccessToken } from "./services/auth0";
+import {
+  githubCloseIssue,
+  githubCommentIssue,
+  githubCreateIssue,
+  githubCreateIssueWithAssignee,
+  githubListIssues,
+  githubListPulls,
+  githubListRepos,
+  githubReopenIssue,
+  parseRepo,
+} from "./services/github";
+import { slackLookupUserByEmail, slackOpenDm, slackPostMessage } from "./services/slack";
+import { recordAnnouncement } from "./slack-intake";
 
 type SupportedProvider = "github" | "slack";
 
@@ -151,32 +164,6 @@ async function callGithubMcpTool(
     }
   }
 }
-
-export async function listAllTools(userId: string): Promise<ToolDefinition[]> {
-  const discovered = await Promise.all([
-    listProviderTools(userId, "github"),
-    listProviderTools(userId, "slack"),
-  ]);
-
-  const facadeTools: ToolDefinition[] = [
-    {
-      name: "intent_list_my_repos",
-      description:
-        "Use this to show the user their own GitHub repositories. Requires NO input.",
-import {
-  githubCloseIssue,
-  githubCommentIssue,
-  githubCreateIssue,
-  githubCreateIssueWithAssignee,
-  githubListIssues,
-  githubListPulls,
-  githubListRepos,
-  githubReopenIssue,
-  parseRepo,
-} from "./services/github";
-import { slackPostMessage } from "./services/slack";
-import { slackLookupUserByEmail, slackOpenDm } from "./services/slack";
-import { recordAnnouncement } from "./slack-intake";
 
 export function listLocalTools(): ToolDefinition[] {
   return [
@@ -414,7 +401,6 @@ export function listLocalTools(): ToolDefinition[] {
       name: "intent_create_branch",
       description:
         "Use this to create a new branch in a repository. Requires repo and branchName, optional fromBranch.",
-      name: "manage_issues",
       domain: "github",
       needsRepo: true,
       defaultRisk: "LOW",
@@ -758,7 +744,6 @@ export function listLocalTools(): ToolDefinition[] {
       name: "intent_find_my_repos",
       description:
         "Use this to find repositories by name within the user's own GitHub account. Requires a specific query.",
-      name: "slack_notifier",
       domain: "slack",
       needsRepo: false,
       defaultRisk: "LOW",
@@ -851,6 +836,18 @@ export function listLocalTools(): ToolDefinition[] {
       },
     },
   ];
+}
+
+export async function listAllTools(userId?: string): Promise<ToolDefinition[]> {
+  const facadeTools = listLocalTools();
+  if (!userId) {
+    return facadeTools;
+  }
+
+  const discovered = await Promise.all([
+    listProviderTools(userId, "github"),
+    listProviderTools(userId, "slack"),
+  ]);
 
   const mappedMcpTools = discovered.flat().map(({ provider, tool: mcpTool }) => {
     const defaultRisk = inferRiskLevel(mcpTool);
@@ -902,8 +899,6 @@ export function listLocalTools(): ToolDefinition[] {
   );
 
   return [...facadeTools, ...filteredRawTools];
-export async function listAllTools() {
-  return listLocalTools();
 }
 
 export function getToolIndex(tools: ToolDefinition[]) {
