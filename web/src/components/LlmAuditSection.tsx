@@ -62,6 +62,9 @@ function sparklinePath(series: number[]) {
 
 function semanticClass(text: string) {
   const normalized = text.toLowerCase().trim();
+  if (normalized.includes("verdict: blocked") || normalized.includes("step-up")) {
+    return "text-rose-300";
+  }
   if (normalized.startsWith("asked for missing input")) {
     return "text-amber-300";
   }
@@ -91,6 +94,13 @@ function mockLatency(entry: LlmAuditEntry) {
 }
 
 function summarize(entry: LlmAuditEntry) {
+  if (entry.callType === "policy") {
+    const action = String(entry.output?.action || entry.input?.tool || "tool");
+    const verdict = String(entry.output?.verdict || "UNKNOWN");
+    const reason = String(entry.output?.reason || "No reason provided");
+    return `Action: ${action} | Verdict: ${verdict} | Reason: ${reason}`;
+  }
+
   if (entry.callType === "plan") {
     const stepsCount = Number(entry.output?.stepsCount || 0);
     const question = String(entry.output?.question || "").trim();
@@ -111,20 +121,47 @@ function summarize(entry: LlmAuditEntry) {
 }
 
 export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
-  const [typeFilter, setTypeFilter] = useState<"all" | "plan" | "recovery" | "reply">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "plan" | "recovery" | "reply" | "policy">("all");
   const [query, setQuery] = useState("");
   const [expandedOutputIds, setExpandedOutputIds] = useState<Set<string>>(new Set());
   const [drawerEntry, setDrawerEntry] = useState<LlmAuditEntry | null>(null);
 
   const stats = useMemo(() => {
-    const counts = { plan: 0, recovery: 0, reply: 0 };
+    const counts = { plan: 0, recovery: 0, reply: 0, policy: 0 };
     for (const entry of entries) {
       if (entry.callType === "plan") counts.plan += 1;
       if (entry.callType === "recovery") counts.recovery += 1;
       if (entry.callType === "reply") counts.reply += 1;
+      if (entry.callType === "policy") counts.policy += 1;
     }
     return counts;
   }, [entries]);
+
+  const modelCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const entry of entries) {
+      const key = entry.model || "unknown";
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [entries]);
+  const topModel = useMemo(
+    () => Object.entries(modelCounts).sort((a, b) => b[1] - a[1])[0] ?? null,
+    [modelCounts],
+  );
+  const policyBlockedCount = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          entry.callType === "policy" &&
+          String(entry.output?.verdict || "").toUpperCase() === "BLOCKED",
+      ).length,
+    [entries],
+  );
+  const activeRunCount = useMemo(
+    () => new Set(entries.map((entry) => entry.runId).filter(Boolean)).size,
+    [entries],
+  );
 
   const sparkline = useMemo(
     () => ({
@@ -132,6 +169,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
       plan: buildSparklineSeries(entries, (entry) => entry.callType === "plan"),
       recovery: buildSparklineSeries(entries, (entry) => entry.callType === "recovery"),
       reply: buildSparklineSeries(entries, (entry) => entry.callType === "reply"),
+      policy: buildSparklineSeries(entries, (entry) => entry.callType === "policy"),
     }),
     [entries],
   );
@@ -191,13 +229,13 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
     >
       <h2 className="inline-flex items-center gap-2 text-3xl font-black tracking-[-0.03em] text-slate-100">
         <BrainCircuit className="h-6 w-6 text-fuchsia-300" />
-        LLM Trace
+        AI Activity
       </h2>
       <p className="mt-2 text-sm text-slate-300">
-        Shows Groq calls used for planning, recovery, and user-facing replies.
+        Timeline of AI planning, recovery, policy, and response activity.
       </p>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[
           {
             key: "total",
@@ -231,6 +269,14 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
             path: sparklinePath(sparkline.reply),
             stroke: "#B6FF3B",
           },
+          {
+            key: "policy",
+            label: "Policy",
+            value: stats.policy,
+            tone: "border-rose-300/60 text-rose-100",
+            path: sparklinePath(sparkline.policy),
+            stroke: "#FB7185",
+          },
         ].map((card) => (
           <m.div
             key={card.key}
@@ -250,6 +296,28 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
             <div className="text-[11px] text-slate-500">Last 30 min</div>
           </m.div>
         ))}
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Most Used Model</div>
+          <div className="mt-1 text-base font-bold text-slate-100">
+            {topModel ? topModel[0] : "No model data"}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {topModel ? `${topModel[1]} calls` : "Run activity to populate model insights."}
+          </div>
+        </div>
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Policy Blocks</div>
+          <div className="mt-1 text-base font-bold text-rose-200">{policyBlockedCount}</div>
+          <div className="mt-1 text-xs text-slate-400">Policy calls with a blocked verdict.</div>
+        </div>
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Active Runs</div>
+          <div className="mt-1 text-base font-bold text-cyan-100">{activeRunCount}</div>
+          <div className="mt-1 text-xs text-slate-400">Unique run IDs in current activity window.</div>
+        </div>
       </div>
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-3">
@@ -295,6 +363,13 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
           >
             Reply
           </button>
+          <button
+            type="button"
+            onClick={() => setTypeFilter("policy")}
+            className={filterChipClass(typeFilter === "policy", "border-rose-300/60 text-rose-100")}
+          >
+            Policy
+          </button>
         </div>
       </div>
 
@@ -309,7 +384,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
               <th className="px-3 py-3">Request</th>
               <th className="px-3 py-3">Latency</th>
               <th className="px-3 py-3">Tokens</th>
-              <th className="px-3 py-3">Why / Output</th>
+              <th className="px-3 py-3">Summary</th>
               <th className="px-3 py-3">Input</th>
             </tr>
           </thead>
@@ -317,7 +392,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
             {!filtered.length ? (
               <tr>
                 <td colSpan={9} className="px-3 py-4 text-slate-300">
-                  No LLM trace entries match your filters yet.
+                  No AI activity entries match your filters yet.
                 </td>
               </tr>
             ) : null}
@@ -330,7 +405,9 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
                   ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-200"
                   : entry.callType === "recovery"
                     ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
-                    : "border-sky-500/40 bg-sky-500/10 text-sky-200";
+                    : entry.callType === "policy"
+                      ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+                      : "border-sky-500/40 bg-sky-500/10 text-sky-200";
               const runTone = runToneClass(entry.runId);
               const whyExpanded = expandedOutputIds.has(entry.id);
 
@@ -387,7 +464,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
                       onClick={() => setDrawerEntry(entry)}
                       className="rounded-lg border border-cyan-300/45 bg-cyan-300/10 px-2.5 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/20"
                     >
-                      Open prompt/context
+                      Open details
                     </button>
                   </td>
                 </m.tr>
@@ -418,7 +495,7 @@ export default function LlmAuditSection({ entries }: LlmAuditSectionProps) {
               className="fixed right-0 top-0 z-50 h-full w-full max-w-2xl overflow-auto border-l border-white/10 bg-[#10131a]/95 p-5 backdrop-blur-xl"
             >
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-xl font-bold text-slate-100">Prompt / Context Inspector</h3>
+                <h3 className="text-xl font-bold text-slate-100">Request Details</h3>
                 <button
                   type="button"
                   onClick={() => setDrawerEntry(null)}

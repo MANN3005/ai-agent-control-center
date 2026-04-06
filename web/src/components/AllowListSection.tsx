@@ -95,11 +95,11 @@ export default function AllowListSection({
       <div>
         <h2 className="inline-flex items-center gap-2 text-3xl font-black tracking-[-0.03em] text-slate-100">
           <ShieldPlus className="h-6 w-6 text-cyan-300" />
-          Allowed Repos
+          Approved Repositories
         </h2>
         <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-300">
-          Add repositories as controlled scope chips. Agents can only execute repo
-          actions against this verified set.
+          Define exactly which repositories are available to the agent. Actions run
+          only within this approved set.
         </p>
 
         <div className="glass-panel mt-5 rounded-3xl border border-white/10 bg-black/35 p-4">
@@ -149,7 +149,7 @@ export default function AllowListSection({
                     </div>
                   ) : (
                     <div className="mt-1 text-xs text-slate-500">
-                      No live match yet. Ensure this is owner/repo and linked to your GitHub account.
+                      No live match yet. Use owner/repo and confirm it is available in your linked GitHub account.
                     </div>
                   )}
                 </div>
@@ -198,7 +198,7 @@ export default function AllowListSection({
               disabled={saveState === "saving"}
               className="inline-flex items-center gap-2 rounded-full border border-cyan-200/40 bg-linear-to-r from-cyan-300 to-sky-300 px-6 py-2.5 text-sm font-black text-black shadow-[0_0_24px_rgba(64,224,255,0.28)] disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {saveState === "saving" ? "Syncing..." : saveState === "synced" ? "Policies Synced" : "Save Allow-list"}
+              {saveState === "saving" ? "Saving..." : saveState === "synced" ? "Saved" : "Apply Changes"}
               {saveState === "synced" ? <Check className="h-4 w-4" /> : null}
             </m.button>
           </div>
@@ -212,10 +212,10 @@ export default function AllowListSection({
             Active Scope
           </div>
           <p className="mt-2 text-sm text-emerald-50/90">
-            Agents can only see these specific resources.
+            The agent can access only these repositories.
           </p>
           <p className="mt-2 text-xs uppercase tracking-widest text-emerald-100/80">
-            Current Policy: Hard-Block on all other repositories.
+            All other repositories remain unavailable.
           </p>
         </div>
 
@@ -227,7 +227,7 @@ export default function AllowListSection({
           <p className="mt-2 text-sm text-slate-300">
             {loadingRepos
               ? "Checking GitHub access and loading repository metadata..."
-              : `Connected visibility: ${githubRepos.length} repositories detected from your linked GitHub identity.`}
+              : `Connected visibility: ${githubRepos.length} repositories detected from your linked account.`}
           </p>
         </div>
       </div>

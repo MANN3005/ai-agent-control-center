@@ -63,7 +63,9 @@ export function buildIssuesSummary(
 
   const shownCount = Math.min(issues.length, safeLimit);
   const remainder =
-    issues.length > safeLimit ? `\n...and ${issues.length - safeLimit} more issue(s).` : "";
+    issues.length > safeLimit
+      ? `\n...and ${issues.length - safeLimit} more issue(s).`
+      : "";
 
   return [
     `Issue summary${repoLabel} (${state}): ${issues.length} issue(s).`,

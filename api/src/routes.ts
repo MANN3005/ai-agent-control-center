@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { Express } from "express";
 import { prisma } from "./db";
-import type { AgentRun } from "./types";
+import type { AgentRun, AgentTask } from "./types";
+import { fanOutToolCall } from "./agent/fanout";
 import {
   AGENT_RUNS,
   LAST_CONTEXT,
@@ -18,6 +19,7 @@ import {
   getToolAwareValidationPrompt,
   normalizeAgentSteps,
   parsePendingFieldAnswer,
+  recordPolicyVerdictEntry,
   trace,
   executeToolWithPolicy,
 } from "./agent/engine";
@@ -30,6 +32,7 @@ import {
   getAuth0Connections,
   hasGithubIdentity,
   hasSlackIdentity,
+  revokeAllAuth0VaultTokens,
 } from "./services/auth0";
 import { getToolIndex, listAllTools } from "./tools";
 
@@ -62,6 +65,202 @@ const PutAllowedBody = z.object({
   resources: z.array(z.string().min(1)),
 });
 
+const StepUpStartBody = z
+  .object({
+    requestedAtMs: z.number().finite().positive().optional(),
+  })
+  .optional();
+
+const LockdownBody = z
+  .object({
+    reason: z.string().min(1).max(200).optional(),
+  })
+  .optional();
+
+const ArmAgentBody = z
+  .object({
+    requestedAtMs: z.number().finite().positive().optional(),
+  })
+  .optional();
+
+const DISARMED_USERS = new Map<
+  string,
+  { disarmedAt: string; reason: string; revoke: { ok: boolean; steps: any[] } }
+>();
+
+function identityMatchesProvider(
+  identity: any,
+  provider: "github" | "slack" | "google" | "google-oauth2" | undefined,
+  connections: { github: string; google: string; slack: string },
+) {
+  if (!provider) return true;
+  const idProvider = String(identity?.provider || "").toLowerCase();
+  const idConnection = String(identity?.connection || "").toLowerCase();
+  if (provider === "github") {
+    return (
+      idProvider === "github" ||
+      idConnection === String(connections.github || "").toLowerCase() ||
+      idConnection === "github"
+    );
+  }
+  if (provider === "slack") {
+    return (
+      idProvider === "slack" ||
+      (idProvider === "oauth2" && idConnection.includes("slack")) ||
+      idConnection === String(connections.slack || "").toLowerCase() ||
+      idConnection.includes("slack")
+    );
+  }
+  return (
+    idProvider === "google-oauth2" ||
+    idProvider === "google" ||
+    idConnection === String(connections.google || "").toLowerCase() ||
+    idConnection === "google-oauth2" ||
+    idConnection === "google"
+  );
+}
+
+function hasMfaEvidence(payload: any) {
+  const amrRaw = payload?.amr;
+  const acrRaw = payload?.acr;
+
+  const amr = Array.isArray(amrRaw)
+    ? amrRaw.map((v) => String(v).toLowerCase())
+    : typeof amrRaw === "string"
+      ? [amrRaw.toLowerCase()]
+      : [];
+  const acr = typeof acrRaw === "string" ? acrRaw.toLowerCase() : "";
+
+  if (amr.includes("mfa")) return true;
+  if (
+    amr.some((value) =>
+      ["otp", "totp", "webauthn", "sms", "push"].includes(value),
+    )
+  ) {
+    return true;
+  }
+  if (acr.includes("multi-factor") || acr.includes("mfa")) return true;
+
+  return false;
+}
+
+function hasFreshReauth(payload: any, requestedAtMs?: number) {
+  if (typeof requestedAtMs !== "number" || !Number.isFinite(requestedAtMs)) {
+    return false;
+  }
+  const iatRaw = payload?.iat;
+  const iatSeconds = typeof iatRaw === "number" ? iatRaw : Number(iatRaw);
+  if (!Number.isFinite(iatSeconds) || iatSeconds <= 0) {
+    return false;
+  }
+  const tokenIssuedAtMs = iatSeconds * 1000;
+  const allowedClockSkewMs = 15_000;
+  return tokenIssuedAtMs + allowedClockSkewMs >= requestedAtMs;
+}
+
+function toDateOrNull(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function estimateTokenExpiry(identity: any, now: Date): Date | null {
+  const explicitExpiry =
+    toDateOrNull(identity?.expires_at) || toDateOrNull(identity?.expiresAt);
+  if (explicitExpiry) return explicitExpiry;
+
+  const expiresInRaw = identity?.expires_in ?? identity?.expiresIn;
+  const expiresInSeconds = Number(expiresInRaw);
+  if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+    return null;
+  }
+
+  const issuedAt =
+    toDateOrNull(identity?.obtained_at) ||
+    toDateOrNull(identity?.created_at) ||
+    toDateOrNull(identity?.updated_at);
+  const base = issuedAt || now;
+  return new Date(base.getTime() + expiresInSeconds * 1000);
+}
+
+function detectIdentityDomain(
+  identity: any,
+  connections: { github: string; google: string; slack: string },
+): "github" | "slack" | "google" | "other" {
+  const provider = String(identity?.provider || "").toLowerCase();
+  const connection = String(identity?.connection || "").toLowerCase();
+
+  const githubConn = String(connections.github || "").toLowerCase();
+  const slackConn = String(connections.slack || "").toLowerCase();
+  const googleConn = String(connections.google || "").toLowerCase();
+
+  if (
+    provider === "github" ||
+    connection === githubConn ||
+    connection === "github"
+  ) {
+    return "github";
+  }
+  if (
+    provider === "slack" ||
+    provider === "sign-in-with-slack" ||
+    (provider === "oauth2" && connection.includes("slack")) ||
+    connection === slackConn ||
+    connection.includes("slack")
+  ) {
+    return "slack";
+  }
+  if (
+    provider === "google-oauth2" ||
+    provider === "google" ||
+    connection === googleConn ||
+    connection === "google-oauth2" ||
+    connection === "google"
+  ) {
+    return "google";
+  }
+  return "other";
+}
+
+function requestsOrgWideMultiRepo(task: string) {
+  const normalized = String(task || "").toLowerCase();
+  return (
+    normalized.includes("across our entire github org") ||
+    normalized.includes("across all repos") ||
+    normalized.includes("across the org") ||
+    normalized.includes("all repos")
+  );
+}
+
+function buildMultiRepoPlanTemplates(
+  plan: Array<{ tool: string; input: Record<string, any> }>,
+  toolIndex: Map<string, { needsRepo: boolean }>,
+) {
+  const deduped: Array<{ tool: string; input: Record<string, any> }> = [];
+  const seen = new Set<string>();
+
+  for (const step of plan) {
+    const toolDef = toolIndex.get(step.tool);
+    const baseInput = toolDef?.needsRepo
+      ? (() => {
+          const copy = { ...step.input };
+          delete (copy as any).repo;
+          delete (copy as any).repository;
+          delete (copy as any).owner;
+          return copy;
+        })()
+      : step.input;
+
+    const key = `${step.tool}:${JSON.stringify(baseInput)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({ tool: step.tool, input: baseInput });
+  }
+
+  return deduped;
+}
+
 export function registerRoutes(app: Express) {
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
@@ -75,6 +274,388 @@ export function registerRoutes(app: Express) {
         res.json({ userId, hasGithub, hasSlack }),
       )
       .catch(() => res.json({ userId, hasGithub: false, hasSlack: false }));
+  });
+
+  app.get("/access-state", async (req, res) => {
+    const userId = (req as any).userId as string;
+    const now = new Date();
+
+    try {
+      const [
+        hasGithub,
+        hasSlack,
+        toolPolicies,
+        allowedRepos,
+        stepUpSession,
+        tools,
+        recentAuditLogs,
+      ] = await Promise.all([
+        hasGithubIdentity(userId).catch(() => false),
+        hasSlackIdentity(userId).catch(() => false),
+        prisma.toolPolicy.findMany({ where: { userId } }),
+        prisma.allowedResource.findMany({
+          where: {
+            userId,
+            provider: "github",
+            resourceType: "repo",
+          },
+          orderBy: { createdAt: "desc" },
+        }),
+        prisma.stepUpSession.findFirst({
+          where: {
+            userId,
+            expiresAt: { gt: now },
+          },
+          orderBy: { expiresAt: "desc" },
+        }),
+        listAllTools(),
+        prisma.auditLog.findMany({
+          where: { userId },
+          orderBy: { createdAt: "desc" },
+          take: 14,
+        }),
+      ]);
+
+      const policiesByTool = new Map<string, any>();
+      for (const tool of tools) {
+        policiesByTool.set(tool.name, {
+          riskLevel: tool.defaultRisk,
+          mode: tool.defaultMode,
+        });
+      }
+      for (const policy of toolPolicies) {
+        policiesByTool.set(policy.toolName, {
+          riskLevel: policy.riskLevel,
+          mode: policy.mode,
+        });
+      }
+
+      let identities: any[] = [];
+      const connections = getAuth0Connections();
+      try {
+        const management = getAuth0ManagementClient();
+        const userResponse: any = await management.users.get({ id: userId });
+        const user = userResponse?.data ?? userResponse;
+        identities = Array.isArray(user?.identities) ? user.identities : [];
+      } catch {
+        identities = [];
+      }
+
+      const allowedRepoIds = allowedRepos.map((item) => item.resourceId);
+      let verifiedAllowedRepoIds = [...allowedRepoIds];
+      let unverifiedAllowedRepoIds: string[] = [];
+      let repoVerificationStatus: "verified" | "unavailable" | "not_checked" =
+        "not_checked";
+
+      if (hasGithub && allowedRepoIds.length > 0) {
+        try {
+          const githubToken = await getGithubAccessToken(userId);
+          const repos = await githubListRepos(githubToken);
+          const accessibleRepoSet = new Set(
+            repos
+              .map((repo) =>
+                String(repo.fullName || "")
+                  .trim()
+                  .toLowerCase(),
+              )
+              .filter(Boolean),
+          );
+
+          verifiedAllowedRepoIds = allowedRepoIds.filter((repoId) =>
+            accessibleRepoSet.has(String(repoId).trim().toLowerCase()),
+          );
+          unverifiedAllowedRepoIds = allowedRepoIds.filter(
+            (repoId) =>
+              !accessibleRepoSet.has(String(repoId).trim().toLowerCase()),
+          );
+          repoVerificationStatus = "verified";
+        } catch {
+          repoVerificationStatus = "unavailable";
+        }
+      }
+
+      const tokenHealth = identities.map((identity) => {
+        const domain = detectIdentityDomain(identity, connections);
+        const expiresAt = estimateTokenExpiry(identity, now);
+        const ttlMs = expiresAt
+          ? Math.max(0, expiresAt.getTime() - now.getTime())
+          : null;
+
+        return {
+          provider: identity?.provider ?? null,
+          connection: identity?.connection ?? null,
+          domain,
+          hasAccessToken: Boolean(identity?.access_token),
+          expiresAt: expiresAt ? expiresAt.toISOString() : null,
+          ttlMs,
+          vaultStatus: Boolean(identity?.access_token)
+            ? "protected_by_auth0_vault"
+            : "not_available",
+          isolationStatus: Boolean(identity?.access_token)
+            ? "token_isolated"
+            : "not_linked",
+        };
+      });
+      const stepUp = stepUpSession
+        ? {
+            active: true,
+            id: stepUpSession.id,
+            expiresAt: stepUpSession.expiresAt,
+            remainingMs: Math.max(
+              0,
+              stepUpSession.expiresAt.getTime() - now.getTime(),
+            ),
+          }
+        : {
+            active: false,
+            id: null,
+            expiresAt: null,
+            remainingMs: 0,
+          };
+
+      const effectiveTools = tools.map((tool) => {
+        const policy = policiesByTool.get(tool.name) || {
+          riskLevel: tool.defaultRisk,
+          mode: tool.defaultMode,
+        };
+
+        const providerConnected =
+          tool.domain === "github"
+            ? hasGithub
+            : tool.domain === "slack"
+              ? hasSlack
+              : true;
+        const requiresAllowedResource = Boolean(
+          tool.needsRepo && tool.domain === "github",
+        );
+        const hasRequiredAllowList =
+          !requiresAllowedResource || verifiedAllowedRepoIds.length > 0;
+        const requiresStepUp = policy.mode === "STEP_UP";
+        const recentDecisions = recentAuditLogs
+          .filter((log) => log.toolName === tool.name)
+          .slice(0, 8)
+          .map((log) => log.decision);
+        const lastAllowed = recentAuditLogs.find(
+          (log) => log.toolName === tool.name && log.decision === "ALLOWED",
+        );
+
+        const policyEvaluations = [
+          {
+            rule: `${tool.name}-provider-link`,
+            result: providerConnected ? "PASS" : "FAIL",
+            detail: providerConnected
+              ? `${tool.domain || "provider"} identity linked`
+              : `Missing ${tool.domain || "provider"} identity link`,
+          },
+          {
+            rule: `${tool.name}-allow-list`,
+            result:
+              !requiresAllowedResource || hasRequiredAllowList
+                ? "PASS"
+                : "FAIL",
+            detail:
+              !requiresAllowedResource || hasRequiredAllowList
+                ? "Resource policy check passed"
+                : "No allow-listed GitHub repositories",
+          },
+          {
+            rule: `${tool.name}-step-up`,
+            result: !requiresStepUp || stepUp.active ? "PASS" : "FAIL",
+            detail:
+              !requiresStepUp || stepUp.active
+                ? "Step-up gate satisfied"
+                : "High-risk tool requires active MFA Step-Up",
+          },
+        ];
+
+        const baseRiskScore =
+          policy.riskLevel === "LOW"
+            ? 35
+            : policy.riskLevel === "MEDIUM"
+              ? 62
+              : 82;
+        const riskReasons: string[] = [
+          `Base risk from policy level: ${policy.riskLevel}`,
+        ];
+        let riskScore = baseRiskScore;
+
+        const recentInputWithBranch = recentAuditLogs
+          .filter((log) => log.toolName === tool.name)
+          .map((log) => {
+            try {
+              return JSON.parse(log.inputJson || "{}");
+            } catch {
+              return {};
+            }
+          })
+          .find((payload) => payload && typeof payload === "object");
+        const branchLike = String(
+          (recentInputWithBranch as any)?.branch ||
+            (recentInputWithBranch as any)?.base ||
+            (recentInputWithBranch as any)?.ref ||
+            "",
+        ).toLowerCase();
+        const productionBranchContext =
+          /^(main|master|release|prod|production)$/.test(branchLike);
+
+        if (tool.name === "manage_issues") {
+          riskScore += 12;
+          riskReasons.push("Tool can mutate issue state (write path)");
+        }
+
+        const hasProductionLikeResource = allowedRepoIds.some((resourceId) =>
+          /prod|production|main|release/i.test(resourceId),
+        );
+        if (
+          hasProductionLikeResource &&
+          (tool.name === "manage_issues" || tool.name === "github_explorer")
+        ) {
+          riskScore += 18;
+          riskReasons.push("Resource scope includes production-like target");
+        }
+
+        if (productionBranchContext && tool.name === "manage_issues") {
+          riskScore = Math.max(riskScore, 95);
+          riskReasons.push(
+            "Production branch context detected (risk spike to 95)",
+          );
+        }
+
+        if (requiresStepUp && !stepUp.active) {
+          riskScore += 14;
+          riskReasons.push("Step-up required but currently inactive");
+        }
+
+        if (!providerConnected) {
+          riskScore += 10;
+          riskReasons.push("Provider identity disconnected");
+        }
+
+        riskScore = Math.max(0, Math.min(100, riskScore));
+        const riskBand =
+          riskScore >= 80
+            ? "CRITICAL"
+            : riskScore >= 60
+              ? "HIGH"
+              : riskScore >= 40
+                ? "MEDIUM"
+                : "LOW";
+
+        return {
+          name: tool.name,
+          domain: tool.domain || "unknown",
+          description: tool.description || "",
+          riskLevel: policy.riskLevel,
+          mode: policy.mode,
+          providerConnected,
+          requiresAllowedResource,
+          hasRequiredAllowList,
+          requiresStepUp,
+          canExecuteNow:
+            providerConnected &&
+            hasRequiredAllowList &&
+            (!requiresStepUp || stepUp.active),
+          recentDecisions,
+          lastAuthorizedAt: lastAllowed?.createdAt?.toISOString() || null,
+          riskScore,
+          riskBand,
+          riskReasons,
+          policyEvaluations,
+          blockedReasons: [
+            !providerConnected
+              ? `Missing ${tool.domain || "provider"} identity link`
+              : null,
+            requiresAllowedResource && !hasRequiredAllowList
+              ? "No allow-listed GitHub repositories"
+              : null,
+            requiresStepUp && !stepUp.active
+              ? "Requires active step-up session"
+              : null,
+          ].filter(Boolean),
+        };
+      });
+
+      const policyDecisions = recentAuditLogs.map((log) => ({
+        id: log.id,
+        at: log.createdAt.toISOString(),
+        toolName: log.toolName,
+        decision: log.decision,
+        reason: log.reason || log.reasoning || "No reason recorded",
+        requestId: log.requestId,
+      }));
+
+      const githubReadEnabled = effectiveTools.some(
+        (tool) => tool.name === "github_explorer" && tool.canExecuteNow,
+      );
+      const githubWriteEnabled = effectiveTools.some(
+        (tool) => tool.name === "manage_issues" && tool.canExecuteNow,
+      );
+      const resourceBreakdown = verifiedAllowedRepoIds.map((repoId) => {
+        const permissions = {
+          read: githubReadEnabled,
+          write: githubWriteEnabled,
+          delete: false,
+        };
+        const level =
+          permissions.read && permissions.write
+            ? "full_access"
+            : permissions.read
+              ? "metadata_only"
+              : "blocked";
+        const label =
+          level === "full_access"
+            ? "Full Access (Read/Write)"
+            : level === "metadata_only"
+              ? "Metadata Only (No Write Access)"
+              : "Blocked";
+        return {
+          resourceId: repoId,
+          level,
+          label,
+          permissions,
+        };
+      });
+
+      const lockdownState = DISARMED_USERS.get(userId);
+
+      return res.json({
+        userId,
+        now: now.toISOString(),
+        identities: {
+          hasGithub,
+          hasSlack,
+          linked: identities.map((identity) => ({
+            provider: identity?.provider ?? null,
+            connection: identity?.connection ?? null,
+            providerUserId: identity?.user_id ?? null,
+            hasAccessToken: Boolean(identity?.access_token),
+          })),
+        },
+        resources: {
+          allowedRepos: allowedRepoIds,
+          allowedRepoCount: allowedRepoIds.length,
+          verifiedAllowedRepos: verifiedAllowedRepoIds,
+          verifiedAllowedRepoCount: verifiedAllowedRepoIds.length,
+          unverifiedAllowedRepos: unverifiedAllowedRepoIds,
+          repoVerificationStatus,
+          breakdown: resourceBreakdown,
+        },
+        tokenHealth,
+        stepUp,
+        tools: effectiveTools,
+        policyDecisions,
+        agentHealth: {
+          status: lockdownState ? "DISARMED" : "STANDBY",
+          disarmedAt: lockdownState?.disarmedAt || null,
+          reason: lockdownState?.reason || null,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        status: "error",
+        reason: err?.message || "Failed to resolve access state",
+      });
+    }
   });
 
   app.get("/debug/identities", async (req, res) => {
@@ -112,6 +693,15 @@ export function registerRoutes(app: Express) {
       return res
         .status(403)
         .json({ status: "denied", reason: "Must link from secondary account" });
+    const canLinkFromSecondary = Boolean(
+      secondaryUserId && userId === secondaryUserId,
+    );
+    const canLinkFromPrimary = userId === primaryUserId;
+    if (!canLinkFromPrimary && !canLinkFromSecondary) {
+      return res.status(403).json({
+        status: "denied",
+        reason: "Must link from primary or secondary account",
+      });
     }
 
     try {
@@ -225,7 +815,23 @@ export function registerRoutes(app: Express) {
   app.get("/policies", async (req, res) => {
     const userId = (req as any).userId as string;
     const policies = await prisma.toolPolicy.findMany({ where: { userId } });
-    res.json(policies);
+    const tools = await listAllTools();
+
+    const merged = new Map<string, any>();
+    for (const tool of tools) {
+      merged.set(tool.name, {
+        userId,
+        toolName: tool.name,
+        riskLevel: tool.defaultRisk,
+        mode: tool.defaultMode,
+      });
+    }
+
+    for (const policy of policies) {
+      merged.set(policy.toolName, policy);
+    }
+
+    return res.json(Array.from(merged.values()));
   });
 
   app.get("/tools", async (req, res) => {
@@ -345,6 +951,59 @@ export function registerRoutes(app: Express) {
     res.json({ stepUpId: session.id, expiresAt: session.expiresAt });
   });
 
+  app.post("/agent/lockdown", async (req, res) => {
+    const userId = (req as any).userId as string;
+    const parsed = LockdownBody.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json(parsed.error);
+
+    const reason = parsed.data?.reason || "Manual session lockdown";
+    const revoke = await revokeAllAuth0VaultTokens(userId).catch(
+      (err: any) => ({
+        ok: false,
+        steps: [
+          {
+            step: "revoke_failed",
+            ok: false,
+            detail: err?.message || "unknown_error",
+          },
+        ],
+      }),
+    );
+
+    DISARMED_USERS.set(userId, {
+      disarmedAt: new Date().toISOString(),
+      reason,
+      revoke,
+    });
+
+    return res.json({
+      status: "disarmed",
+      disarmedAt: DISARMED_USERS.get(userId)?.disarmedAt,
+      reason,
+      revoke,
+    });
+  });
+
+  app.post("/agent/arm", async (req, res) => {
+    const userId = (req as any).userId as string;
+    const payload = (req as any).auth?.payload;
+    const parsed = ArmAgentBody.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json(parsed.error);
+
+    const requestedAtMs = parsed.data?.requestedAtMs;
+    const hasRecentReauth = hasFreshReauth(payload, requestedAtMs);
+    if (!hasRecentReauth) {
+      return res.status(403).json({
+        status: "denied",
+        reason:
+          "Re-arm denied: token was not freshly reissued after re-login challenge.",
+      });
+    }
+
+    DISARMED_USERS.delete(userId);
+    return res.json({ status: "armed" });
+  });
+
   app.post("/tools/execute", async (req, res) => {
     const userId = (req as any).userId as string;
     const body = (req.body ?? {}) as any;
@@ -379,24 +1038,92 @@ export function registerRoutes(app: Express) {
         .status(400)
         .json({ status: "denied", reason: "Missing requestId or tool" });
     }
-    const response = await executeToolWithPolicy(
-      userId,
-      requestId,
-      tool,
-      input,
-      approval,
-    );
-    return res.status(response.statusCode).json(response.body);
+
+    const lockdown = DISARMED_USERS.get(userId);
+    if (lockdown) {
+      await prisma.auditLog.create({
+        data: {
+          userId,
+          requestId,
+          toolName: tool,
+          inputJson: JSON.stringify(input),
+          decision: "DENIED",
+          reason: "Agent is DISARMED by session lockdown",
+          reasoning: lockdown.reason,
+          executed: false,
+        },
+      });
+      return res.status(423).json({
+        status: "denied",
+        reason: "Agent is DISARMED. Re-arm session before running tools.",
+      });
+    }
+
+    try {
+      const response = await executeToolWithPolicy(
+        userId,
+        requestId,
+        tool,
+        input,
+        approval,
+      );
+      return res.status(response.statusCode).json(response.body);
+    } catch (err: any) {
+      await prisma.auditLog.create({
+        data: {
+          userId,
+          requestId,
+          toolName: tool,
+          inputJson: JSON.stringify(input),
+          decision: "ERROR",
+          reason: err?.message || "Unexpected tool execution failure",
+          reasoning: "Unhandled exception in /tools/execute route",
+          executed: false,
+        },
+      });
+
+      return res.status(500).json({
+        status: "error",
+        reason: err?.message || "Unexpected tool execution failure",
+      });
+    }
   });
 
   app.post("/agent/run", async (req, res) => {
     const userId = (req as any).userId as string;
-    const body = (req.body ?? {}) as any;
+    const body = (req.body ?? {}) as Partial<AgentTask>;
     const requestId =
       typeof body.requestId === "string" ? body.requestId.trim() : "";
     const task = typeof body.task === "string" ? body.task.trim() : "";
     const incomingContext =
       body.context && typeof body.context === "object" ? body.context : {};
+    let repos = Array.isArray(body.repos)
+      ? Array.from(
+          new Set(
+            body.repos
+              .map((repo) => String(repo || "").trim())
+              .filter((repo) => repo.length > 0),
+          ),
+        )
+      : [];
+
+    if (repos.length === 0 && requestsOrgWideMultiRepo(task)) {
+      const allowedRepos = await prisma.allowedResource.findMany({
+        where: {
+          userId,
+          provider: "github",
+          resourceType: "repo",
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      repos = Array.from(
+        new Set(
+          allowedRepos
+            .map((item) => String(item.resourceId || "").trim())
+            .filter(Boolean),
+        ),
+      );
+    }
 
     const previousContext = LAST_CONTEXT.get(userId) || {};
     const extracted = extractContextFromText(task);
@@ -411,12 +1138,20 @@ export function registerRoutes(app: Express) {
         ...(previousContext.textExtractedContext || {}),
         ...textExtractedContext,
       },
+      ...(repos.length > 0 ? { repos, repo: extracted.repo || repos[0] } : {}),
     };
 
     if (!requestId || !task) {
       return res.status(400).json({
         status: "denied",
         reason: "Missing requestId or task",
+      });
+    }
+
+    if (DISARMED_USERS.has(userId)) {
+      return res.status(423).json({
+        status: "denied",
+        reason: "Agent is DISARMED. Re-arm session before starting new runs.",
       });
     }
 
@@ -505,6 +1240,76 @@ export function registerRoutes(app: Express) {
       }
 
       run.pendingFieldCapture = null;
+      run.plan = normalizeAgentSteps(guardedSteps, context, toolIndex);
+
+      if (repos.length > 0) {
+        run.plan = buildMultiRepoPlanTemplates(run.plan, toolIndex as any);
+        trace(
+          run,
+          "thought",
+          `Multi-repo orchestration active across ${repos.length} repositories`,
+        );
+        run.status = "RUNNING";
+
+        for (let i = 0; i < run.plan.length; i += 1) {
+          const step = run.plan[i];
+          const stepRecord = getOrCreateStepRecord(run, i, step);
+          run.currentStep = i;
+
+          try {
+            const toolDef = toolIndex.get(step.tool);
+            if (toolDef?.needsRepo) {
+              const aggregated = await fanOutToolCall(
+                userId,
+                `${requestId}:step:${i}`,
+                step.tool,
+                step.input,
+                repos,
+                { confirmed: false, stepUpId: null },
+              );
+
+              stepRecord.status =
+                aggregated.successCount > 0 ? "EXECUTED" : "ERROR";
+              stepRecord.result = aggregated;
+              if (aggregated.failureCount > 0) {
+                stepRecord.reason = aggregated.summary;
+              }
+
+              run.messages.push({ role: "agent", text: aggregated.summary });
+              trace(run, "action", `${step.tool}: ${aggregated.summary}`);
+            } else {
+              const response = await executeToolWithPolicy(
+                userId,
+                `${requestId}:step:${i}`,
+                step.tool,
+                step.input,
+                { confirmed: false, stepUpId: null },
+              );
+
+              stepRecord.status =
+                response.statusCode >= 400 ? "ERROR" : "EXECUTED";
+              stepRecord.result = response.body;
+              if (stepRecord.status === "ERROR") {
+                stepRecord.reason = String(
+                  response.body?.reason ||
+                    response.body?.status ||
+                    "Step failed",
+                );
+              }
+            }
+          } catch (err: any) {
+            const reason = err?.message || "Step failed in multi-repo mode";
+            stepRecord.status = "ERROR";
+            stepRecord.reason = reason;
+            trace(run, "status", reason);
+          }
+        }
+
+        run.status = "COMPLETED";
+        trace(run, "status", "Multi-repo run completed");
+        return res.json({ status: "started", run: formatRunForClient(run) });
+      }
+
       run.status = "RUNNING";
       trace(run, "thought", "Plan ready, executing");
       enqueueAgentRun(run.id);
@@ -523,6 +1328,37 @@ export function registerRoutes(app: Express) {
     }
   });
 
+  app.get("/llm-audit", async (req, res) => {
+    const userId = (req as any).userId as string;
+    const limit = Math.min(Number(req.query.limit || 50), 200);
+    const llmAuditModel = (prisma as any).llmAuditLog;
+
+    if (llmAuditModel) {
+      const rows = await llmAuditModel.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      });
+
+      return res.json(
+        rows.map((row: any) => ({
+          id: row.id,
+          userId: row.userId,
+          runId: row.runId,
+          requestId: row.requestId,
+          callType: row.callType,
+          model: row.model,
+          input: JSON.parse(row.inputJson || "{}"),
+          output: JSON.parse(row.outputJson || "{}"),
+          createdAt: row.createdAt,
+        })),
+      );
+    }
+
+    const logs = LLM_AUDIT_LOGS.get(userId) || [];
+    return res.json(logs.slice(0, limit));
+  });
+
   app.get("/agent/runs/:id", async (req, res) => {
     const userId = (req as any).userId as string;
     const runId = String(req.params.id || "");
@@ -538,6 +1374,13 @@ export function registerRoutes(app: Express) {
     const body = (req.body ?? {}) as any;
     const runId = typeof body.runId === "string" ? body.runId.trim() : "";
     const message = typeof body.message === "string" ? body.message.trim() : "";
+
+    if (DISARMED_USERS.has(userId)) {
+      return res.status(423).json({
+        status: "denied",
+        reason: "Agent is DISARMED. Re-arm session before continuing runs.",
+      });
+    }
     const approval = {
       confirmed: Boolean(body.approval?.confirmed),
       stepUpId:
@@ -814,6 +1657,24 @@ export function registerRoutes(app: Express) {
       );
 
       const responseBody = response.body || {};
+      const policyVerdict =
+        responseBody.status === "executed"
+          ? "ALLOWED"
+          : responseBody.status === "confirm_required"
+            ? "CONFIRM_REQUIRED"
+            : responseBody.status === "step_up_required"
+              ? "STEP_UP_REQUIRED"
+              : response.statusCode >= 400
+                ? "ERROR"
+                : "BLOCKED";
+      recordPolicyVerdictEntry(
+        userId,
+        `${run.id}:${stepIndex + 1}`,
+        step.tool,
+        step.input,
+        policyVerdict,
+        String(responseBody.reason || responseBody.status || "Policy decision"),
+      );
 
       if (
         responseBody.status === "confirm_required" ||

@@ -135,6 +135,58 @@ async function resolveGithubLogin(userId: string): Promise<string | null> {
 
 export async function getGithubUsernameFromVault(userId: string) {
   return resolveGithubLogin(userId);
+export type LlmAuditEntry = {
+  id: string;
+  userId: string;
+  runId: string | null;
+  requestId: string | null;
+  callType: "plan" | "recovery" | "reply" | "policy";
+  model: string;
+  input: Record<string, any>;
+  output: Record<string, any>;
+  createdAt: string;
+};
+
+export const LLM_AUDIT_LOGS = new Map<string, LlmAuditEntry[]>();
+
+function clip(value: string, max = 1000) {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
+function recordLlmAudit(entry: Omit<LlmAuditEntry, "id" | "createdAt">) {
+  if (!entry.userId) return;
+  const next: LlmAuditEntry = {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    ...entry,
+    input: JSON.parse(clip(JSON.stringify(entry.input || {}), 4000)),
+    output: JSON.parse(clip(JSON.stringify(entry.output || {}), 4000)),
+  };
+  const current = LLM_AUDIT_LOGS.get(entry.userId) || [];
+  current.unshift(next);
+  LLM_AUDIT_LOGS.set(entry.userId, current.slice(0, 200));
+
+  const llmAuditModel = (prisma as any).llmAuditLog;
+  if (!llmAuditModel) return;
+
+  // Persist to DB without blocking request flow.
+  void llmAuditModel
+    .create({
+      data: {
+        userId: next.userId,
+        runId: next.runId,
+        requestId: next.requestId,
+        callType: next.callType,
+        model: next.model,
+        inputJson: JSON.stringify(next.input || {}),
+        outputJson: JSON.stringify(next.output || {}),
+        createdAt: new Date(next.createdAt),
+      },
+    })
+    .catch(() => {
+      // Keep trace generation resilient if DB write fails.
+    });
 }
 
 function buildDecisionReason(tool: string, input: Record<string, any>) {
@@ -157,7 +209,53 @@ function buildDecisionReason(tool: string, input: Record<string, any>) {
     const channel = input.channel ? ` to #${input.channel}` : "";
     return `${action === "summary" ? "Post summary" : "Post message"}${channel}.`;
   }
+
+  const repo = String(input.repository || "").trim();
+  const owner = String(input.owner || "").trim();
+  const repoName = String(input.repo || "").trim();
+  if (repo) {
+    return `${tool} on ${repo}.`;
+  }
+  if (owner && repoName) {
+    return `${tool} on ${owner}/${repoName}.`;
+  }
   return "Execute tool.";
+}
+
+function extractRunIdFromRequestId(requestId: string) {
+  const first = String(requestId || "").split(":")[0] || "";
+  return first.startsWith("run_") ? first : null;
+}
+
+export function recordPolicyVerdictEntry(
+  userId: string,
+  requestId: string,
+  tool: string,
+  input: Record<string, any>,
+  verdict:
+    | "ALLOWED"
+    | "BLOCKED"
+    | "CONFIRM_REQUIRED"
+    | "STEP_UP_REQUIRED"
+    | "ERROR",
+  reason: string,
+) {
+  recordLlmAudit({
+    userId,
+    runId: extractRunIdFromRequestId(requestId),
+    requestId,
+    callType: "policy",
+    model: "policy-engine/v1",
+    input: {
+      tool,
+      input,
+    },
+    output: {
+      action: tool,
+      verdict,
+      reason,
+    },
+  });
 }
 
 function isCircuitTripped(userId: string, tool: string) {
@@ -547,6 +645,9 @@ export async function generateAgentPlan(
 
   setCachedIntentPlan(cacheKey, output);
   return output;
+  return steps.filter(
+    (step) => String(step?.tool || "").toLowerCase() !== "slack_notifier",
+  );
 }
 
 export function normalizeAgentSteps(
@@ -1140,6 +1241,14 @@ export async function runAgentLoop(runId: string) {
         } else if (Array.isArray(issues) && issues.length) {
           const stateLabel = String(previous?.input?.state || "open");
           step.input.text = buildIssuesSummary(issues, 10, stateLabel);
+          const limit = Number(step.input?.limit || 10);
+          const repo = String(previous?.input?.repo || run.context.repo || "");
+          step.input.text = buildIssuesSummary(
+            issues,
+            limit,
+            stateLabel,
+            repo || undefined,
+          );
         } else if (run.context.repo && run.context.issueNumber) {
           const accessToken = await getGithubAccessToken(run.userId);
           const { owner, name } = parseRepo(String(run.context.repo));
@@ -1205,6 +1314,24 @@ export async function runAgentLoop(runId: string) {
       );
 
       const responseBody = response.body || {};
+      const policyVerdict =
+        responseBody.status === "executed"
+          ? "ALLOWED"
+          : responseBody.status === "confirm_required"
+            ? "CONFIRM_REQUIRED"
+            : responseBody.status === "step_up_required"
+              ? "STEP_UP_REQUIRED"
+              : response.statusCode >= 400
+                ? "ERROR"
+                : "BLOCKED";
+      recordPolicyVerdictEntry(
+        run.userId,
+        `${run.id}:${stepIndex + 1}`,
+        step.tool,
+        step.input,
+        policyVerdict,
+        String(responseBody.reason || responseBody.status || "Policy decision"),
+      );
 
       if (
         responseBody.status === "confirm_required" ||
@@ -1370,6 +1497,7 @@ export async function executeToolWithPolicy(
   tool: ToolName,
   input: Record<string, any>,
   approval: { confirmed: boolean; stepUpId: string | null },
+  executionContext?: { githubToken?: string | null },
 ) {
   input = normalizeStepInput(input || {});
   if ((input as any)[CF.BRANCH_NAME] && !(input as any).branchName) {
@@ -1390,6 +1518,7 @@ export async function executeToolWithPolicy(
   }
 
   const tools = await listAllTools(userId);
+  const tools = await listAllTools();
   const toolIndex = getToolIndex(tools);
   const toolInfo = toolIndex.get(tool);
   if (!toolInfo) {
@@ -1455,8 +1584,20 @@ export async function executeToolWithPolicy(
     effectivePolicy.riskLevel = "HIGH" as any;
   }
 
-  if (toolInfo.needsRepo) {
-    const repo = String((input as any).repo || "");
+  const githubTokenFromContext = executionContext?.githubToken || null;
+  const resolveRepoFromInput = (value: Record<string, any>) => {
+    const repository = String((value as any).repository || "").trim();
+    if (repository) return repository;
+
+    const owner = String((value as any).owner || "").trim();
+    const repo = String((value as any).repo || "").trim();
+    if (owner && repo) return `${owner}/${repo}`;
+
+    return repo;
+  };
+
+  if (toolInfo.needsRepo && toolInfo.domain === "github") {
+    const repo = resolveRepoFromInput(input);
     if (!repo) {
       const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
@@ -1479,7 +1620,8 @@ export async function executeToolWithPolicy(
 
     let resolvedRepo = repo;
     if (!resolvedRepo.includes("/")) {
-      const accessToken = await getGithubAccessToken(userId);
+      const accessToken =
+        githubTokenFromContext || (await getGithubAccessToken(userId));
       const repos = await githubListRepos(accessToken);
       const normalized = resolvedRepo.toLowerCase();
       const matches = repos.filter((r) => {
@@ -1532,6 +1674,14 @@ export async function executeToolWithPolicy(
             reason: "Multiple repos matched that name. Use owner/repo.",
           },
         };
+        if (!(input as any).repository) {
+          (input as any).repository = resolvedRepo;
+        }
+        if (!(input as any).owner || !(input as any).repo) {
+          const parsed = parseRepo(resolvedRepo);
+          (input as any).owner = parsed.owner;
+          (input as any).repo = parsed.name;
+        }
       }
     }
 
@@ -1567,6 +1717,14 @@ export async function executeToolWithPolicy(
           ? match.resourceId
           : resolvedRepo;
         (input as any).repo = resolvedRepo;
+        if (!(input as any).repository) {
+          (input as any).repository = resolvedRepo;
+        }
+        if (!(input as any).owner || !(input as any).repo) {
+          const parsed = parseRepo(resolvedRepo);
+          (input as any).owner = parsed.owner;
+          (input as any).repo = parsed.name;
+        }
       }
     }
 
@@ -1650,8 +1808,9 @@ export async function executeToolWithPolicy(
       where: { id: stepUpId },
     });
     const now = new Date();
-    const valid =
-      session && session.userId === userId && session.expiresAt > now;
+    const valid = Boolean(
+      session && session.userId === userId && session.expiresAt > now,
+    );
 
     if (!valid) {
       const reasoning = buildDecisionReason(tool, input);
@@ -1898,7 +2057,7 @@ export async function executeToolWithPolicy(
     }
   }
 
-  if (toolInfo.needsRepo) {
+  if (toolInfo.needsRepo && (input as any).repo) {
     const repo = String((input as any).repo || "");
     try {
       parseRepo(repo);
@@ -2150,5 +2309,13 @@ export async function applySlackAutoFill(run: AgentRun, stepIndex: number) {
   if (Array.isArray(issues) && issues.length) {
     const stateLabel = String(previous?.input?.state || "open");
     step.input.text = buildIssuesSummary(issues, 10, stateLabel);
+    const limit = Number(step.input?.limit || 10);
+    const repo = String(previous?.input?.repo || run.context.repo || "");
+    step.input.text = buildIssuesSummary(
+      issues,
+      limit,
+      stateLabel,
+      repo || undefined,
+    );
   }
 }

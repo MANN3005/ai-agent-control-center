@@ -4,9 +4,11 @@ import {
   Bot,
   ChevronDown,
   Cpu,
+  Lock,
   Shield,
   ShieldAlert,
   Sparkles,
+  Unlock,
   Workflow,
 } from "lucide-react";
 import type {
@@ -44,6 +46,11 @@ type AgentPanelProps = {
   onAllowListRepo: (repo: string) => void;
   stepUpInfo: StepUpInfo;
   onStartStepUp: () => void;
+  agentHealth: {
+    status: "STANDBY" | "DISARMED";
+    disarmedAt: string | null;
+    reason: string | null;
+  };
 };
 
 function renderAgentOutput(step: AgentStep) {
@@ -208,13 +215,15 @@ export default function AgentPanel({
   onAllowListRepo,
   stepUpInfo,
   onStartStepUp,
+  agentHealth,
 }: AgentPanelProps) {
   const [expandedOutputIndex, setExpandedOutputIndex] = useState<number | null>(null);
   const [selectedFlowNode, setSelectedFlowNode] = useState<"thought" | "policy" | "tool" | "output">("thought");
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const chatMessages: AgentMessage[] = agentMessages.length
     ? agentMessages
-    : [{ role: "agent", text: "Say hello to start." }];
+    : [{ role: "agent", text: "Ask anything to get started." }];
 
   const allowListStep = [...agentSteps]
     .reverse()
@@ -232,13 +241,30 @@ export default function AgentPanel({
   const prevNeedsHumanRef = useRef(false);
 
   const promptStarters = [
-    "Summarize issues",
-    "List my repos",
-    "Show open PRs",
-    "Draft Slack update",
+    "Summarize recent issues",
+    "List available repositories",
+    "Show open pull requests",
+    "Draft a status update",
   ];
 
   const latestTraceText = agentTrace[agentTrace.length - 1]?.text ?? "";
+  const isDisarmed = agentHealth.status === "DISARMED";
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  const disarmedAtMs = agentHealth.disarmedAt
+    ? new Date(agentHealth.disarmedAt).getTime()
+    : Number.NaN;
+  const showDisarmedToast =
+    isDisarmed &&
+    Number.isFinite(disarmedAtMs) &&
+    nowMs - disarmedAtMs >= 0 &&
+    nowMs - disarmedAtMs <= 5000;
 
   const remainingSeconds = useMemo(() => {
     if (!stepUpInfo.remainingText || stepUpInfo.remainingText === "-") return null;
@@ -365,7 +391,7 @@ export default function AgentPanel({
             Agent
           </h2>
           <p className="mt-2 text-sm leading-6 text-slate-300">
-            Command-center for live runs, policy-gated execution, and tool output.
+            Run tasks, review safeguards, and inspect execution output in one place.
           </p>
         </div>
 
@@ -386,7 +412,7 @@ export default function AgentPanel({
             }`}
           >
             <ShieldAlert className="h-4 w-4" />
-            Step-up HUD
+            Verification Session
           </div>
           <div className="mt-3 flex items-center gap-3">
             <div className="relative h-18 w-18">
@@ -455,6 +481,55 @@ export default function AgentPanel({
         </m.div>
       </div>
 
+      {!stepUpInfo.active ? (
+        <div className="mt-3 rounded-xl border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-sm text-amber-100">
+          High-risk actions require a verification session before they can run.
+        </div>
+      ) : null}
+
+      <div
+        className={`mt-4 rounded-2xl border p-4 ${
+          isDisarmed
+            ? "border-rose-300/55 bg-rose-300/12"
+            : "border-emerald-300/45 bg-emerald-300/10"
+        }`}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-200">
+              {isDisarmed ? <Lock className="h-4 w-4 text-rose-200" /> : <Unlock className="h-4 w-4 text-emerald-200" />}
+              Agent Status
+            </div>
+            <div className="mt-1 text-sm">
+              <span className={`font-black ${isDisarmed ? "text-rose-200" : "text-emerald-200"}`}>
+                {isDisarmed ? "PAUSED" : "READY"}
+              </span>
+              {isDisarmed ? (
+                <span className="ml-2 text-slate-200">
+                  Tool calls are intentionally blocked by Session Lockdown.
+                </span>
+              ) : (
+                <span className="ml-2 text-slate-200">
+                  Agent execution is available.
+                </span>
+              )}
+            </div>
+            {agentHealth.disarmedAt ? (
+              <div className="mt-1 text-xs text-slate-300">
+                Disarmed at {new Date(agentHealth.disarmedAt).toLocaleString()}
+                {agentHealth.reason ? ` | Reason: ${agentHealth.reason}` : ""}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {isDisarmed && showDisarmedToast ? (
+        <div className="fixed right-5 top-20 z-70 rounded-xl border border-rose-300/45 bg-slate-950/95 px-4 py-3 text-sm text-rose-100 shadow-[0_0_24px_rgba(244,63,94,0.35)]">
+          Session is paused. Use Access to restore agent availability.
+        </div>
+      ) : null}
+
       <div className="mt-5 grid gap-3">
         <div className="grid max-h-72 gap-3 overflow-auto rounded-2xl border border-slate-700 bg-slate-900/55 p-3">
           {chatMessages.map((msg: AgentMessage, idx: number) => (
@@ -473,7 +548,7 @@ export default function AgentPanel({
         </div>
         {allowListRepo ? (
           <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4">
-            <div className="text-xs uppercase tracking-[0.12em] text-amber-200">Repo not allow-listed</div>
+            <div className="text-xs uppercase tracking-[0.12em] text-amber-200">Repository Restricted</div>
             <div className="mt-1 text-sm text-amber-50">{allowListRepo}</div>
             <div className="mt-3">
               <button
@@ -481,14 +556,14 @@ export default function AgentPanel({
                 onClick={() => onAllowListRepo(allowListRepo)}
                 className="rounded-full bg-amber-200 px-5 py-2 text-sm font-semibold text-slate-900 transition hover:bg-amber-100"
               >
-                Add to allow-list
+                Grant repository access
               </button>
             </div>
           </div>
         ) : null}
         {approvalPreview ? (
           <div className="rounded-2xl border border-slate-700 bg-slate-900/55 p-4">
-            <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Approval preview</div>
+            <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Approval details</div>
             <div className="mt-2 text-sm">
               <div>
                 Tool: <b>{approvalPreview.tool || "-"}</b>
@@ -519,11 +594,13 @@ export default function AgentPanel({
             rows={3}
             placeholder="Ask the agent to do something..."
             onKeyDown={(e) => {
+              if (isDisarmed) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 onSend();
               }
             }}
+            disabled={isDisarmed}
           />
           <m.button
             type="button"
@@ -531,6 +608,7 @@ export default function AgentPanel({
             whileTap={{ scale: 0.98 }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
             onClick={onSend}
+            disabled={isDisarmed}
             className="inline-flex items-center gap-2 rounded-full border border-cyan-200/35 bg-linear-to-r from-cyan-300 to-sky-300 px-6 py-2.5 text-sm font-black text-black shadow-[0_0_20px_rgba(64,224,255,0.32)]"
           >
             <Sparkles className="h-4 w-4" />
@@ -569,6 +647,26 @@ export default function AgentPanel({
         )}
       </div>
 
+      {!agentRun ? (
+        <div className="mt-5 rounded-[1.8rem] border border-white/15 bg-white/8 p-4 backdrop-blur-xl">
+          <h3 className="text-lg font-semibold text-slate-100">Getting Started</h3>
+          <p className="mt-1 text-sm text-slate-300">
+            Run your first task with guardrails, then review execution and decision history.
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-sm text-slate-200">
+              1. Choose a starter prompt or type your own request.
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-sm text-slate-200">
+              2. Approve sensitive actions when prompted.
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/25 p-3 text-sm text-slate-200">
+              3. Verify outcomes in Activity Audit and AI Activity.
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {agentRun && (
         <m.div
           whileHover={{ scale: 1.01 }}
@@ -577,7 +675,7 @@ export default function AgentPanel({
         >
           <h3 className="inline-flex items-center gap-2 text-xl font-black text-slate-100">
             <Workflow className="h-5 w-5 text-fuchsia-300" />
-            Plan & Trace
+            Run Activity
           </h3>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <div>
@@ -628,7 +726,7 @@ export default function AgentPanel({
                 <div className="rounded-2xl border border-cyan-300/25 bg-[#0b0d10] p-3">
                   <h4 className="mb-2 inline-flex items-center gap-2 font-semibold text-cyan-100">
                     <Cpu className="h-4 w-4" />
-                    Live Thought Stream
+                    Live Activity Stream
                   </h4>
                   <div className="grid max-h-72 gap-2 overflow-auto rounded-xl border border-cyan-300/15 bg-black/55 p-3 font-mono text-sm text-cyan-100">
                     {agentTrace.map((item: AgentTrace, idx: number) => {
@@ -803,10 +901,10 @@ export default function AgentPanel({
               <div className="animate-scan-line pointer-events-none absolute inset-0 bg-linear-to-b from-transparent via-cyan-300/10 to-transparent" />
               <div className="relative">
                 <div className="text-xs uppercase tracking-[0.18em] text-cyan-300">Security Scan</div>
-                <h4 className="mt-2 text-3xl font-semibold tracking-[-0.02em]">Step-up approval required</h4>
+                <h4 className="mt-2 text-3xl font-semibold tracking-[-0.02em]">Additional verification required</h4>
                 <p className="mt-2 text-sm text-slate-300">
-                  This action crossed a high-risk policy boundary. Start a step-up
-                  session to continue execution.
+                  This action requires extra confirmation. Start a verification
+                  session to continue.
                 </p>
                 <m.button
                   type="button"

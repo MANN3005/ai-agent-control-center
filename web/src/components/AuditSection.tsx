@@ -66,6 +66,18 @@ export default function AuditSection({ audit }: AuditSectionProps) {
   const stepUpChallenges = audit.filter((a) =>
     String(a.decision).includes("STEP_UP") || String(a.decision).includes("CONFIRM"),
   ).length;
+  const blockedEntries = audit.filter(
+    (a) => String(a.decision).toUpperCase() !== "ALLOWED",
+  );
+  const blockedByTool = blockedEntries.reduce<Record<string, number>>((acc, entry) => {
+    const key = entry.toolName || "unknown";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const topBlockedTool = Object.entries(blockedByTool).sort((a, b) => b[1] - a[1])[0] ?? null;
+  const latestEntry = [...audit].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )[0] ?? null;
 
   function decisionPill(entry: AuditEntry) {
     const decision = String(entry.decision || "").toUpperCase();
@@ -97,12 +109,12 @@ export default function AuditSection({ audit }: AuditSectionProps) {
     return executed ? (
       <span className="inline-flex items-center gap-1 rounded-full border border-lime-300/70 bg-lime-300 px-2 py-1 text-xs font-bold text-slate-900">
         <Check className="h-3.5 w-3.5" />
-        true
+        Completed
       </span>
     ) : (
       <span className="inline-flex items-center gap-1 rounded-full border border-rose-300/70 bg-rose-400 px-2 py-1 text-xs font-bold text-white">
         <ShieldX className="h-3.5 w-3.5" />
-        false
+        Not executed
       </span>
     );
   }
@@ -124,9 +136,9 @@ export default function AuditSection({ audit }: AuditSectionProps) {
     >
       <h2 className="inline-flex items-center gap-2 text-3xl font-black tracking-[-0.03em] text-slate-100">
         <ScanSearch className="h-6 w-6 text-amber-300" />
-        Audit Log
+        Activity Audit
       </h2>
-      <p className="mt-2 text-sm text-slate-300">Latest 25 policy decisions and execution outcomes.</p>
+      <p className="mt-2 text-sm text-slate-300">Latest policy decisions and execution outcomes.</p>
 
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
@@ -140,6 +152,31 @@ export default function AuditSection({ audit }: AuditSectionProps) {
         <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
           <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Step-Up Challenges</div>
           <div className="mt-1 text-2xl font-black text-amber-300">{stepUpChallenges}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Most Blocked Tool</div>
+          <div className="mt-1 text-base font-bold text-slate-100">
+            {topBlockedTool ? topBlockedTool[0] : "No blocked actions"}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {topBlockedTool ? `${topBlockedTool[1]} blocked attempts` : "All recent actions were allowed."}
+          </div>
+        </div>
+        <div className="glass-panel rounded-2xl border border-white/10 bg-black/25 p-3">
+          <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Latest Policy Outcome</div>
+          <div className="mt-1 text-base font-bold text-slate-100">
+            {latestEntry
+              ? `${latestEntry.decision === "ALLOWED" ? "Passed" : "Blocked"} - ${latestEntry.toolName}`
+              : "No recent policy evaluations"}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {latestEntry
+              ? new Date(latestEntry.createdAt).toLocaleString()
+              : "Run an action to populate audit telemetry."}
+          </div>
         </div>
       </div>
 
@@ -199,7 +236,7 @@ export default function AuditSection({ audit }: AuditSectionProps) {
               <th className="px-3 py-3">Tool</th>
               <th className="px-3 py-3">Decision</th>
               <th className="px-3 py-3">Executed</th>
-              <th className="px-3 py-3">Policy Gate</th>
+              <th className="px-3 py-3">Policy</th>
               <th className="px-3 py-3">Details</th>
             </tr>
           </thead>
@@ -229,6 +266,9 @@ export default function AuditSection({ audit }: AuditSectionProps) {
                     <td className="px-3 py-3">{decisionPill(a)}</td>
                     <td className="px-3 py-3">{executedPill(a.executed)}</td>
                     <td className="px-3 py-3">
+                      <div className="text-sm font-semibold text-slate-100">
+                        Policy: {a.decision === "ALLOWED" ? "Passed" : "Blocked"}
+                      </div>
                       <div className="text-sm font-semibold text-slate-100">{a.reason || "No gate reason"}</div>
                       {a.reasoning ? (
                         <div className="mt-0.5 text-xs text-slate-400">{a.reasoning}</div>
@@ -236,7 +276,7 @@ export default function AuditSection({ audit }: AuditSectionProps) {
                     </td>
                     <td className="px-3 py-3">
                       <span className="inline-flex items-center gap-1 text-xs text-cyan-300">
-                        Drill-down
+                        View details
                         <ChevronDown className={`h-3.5 w-3.5 transition ${isExpanded ? "rotate-180" : ""}`} />
                       </span>
                     </td>

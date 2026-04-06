@@ -20,6 +20,9 @@ import {
 } from "lucide-react";
 import {
   getMe,
+  getAccessState,
+  lockAgentSession,
+  armAgentSession,
   getPolicies,
   putPolicies,
   getAllowedRepos,
@@ -36,6 +39,7 @@ import {
   unlinkIdentity,
 } from "./api";
 import AgentPanel from "./components/AgentPanel";
+import AccessSection from "./components/AccessSection";
 import AllowListSection from "./components/AllowListSection";
 import PoliciesSection from "./components/PoliciesSection";
 import AuditSection from "./components/AuditSection";
@@ -46,6 +50,7 @@ import type {
   AgentMessage,
   AgentRun,
   AgentTrace,
+  AccessState,
   IdentityEntry,
   LlmAuditEntry,
   Me,
@@ -65,6 +70,9 @@ const LINK_PRIMARY_USER_KEY = "cc_link_primary_user_id";
 const STEP_UP_PENDING_KEY = "cc_step_up_pending";
 const STEP_UP_RETURN_TO_KEY = "cc_step_up_return_to";
 const STEP_UP_REQUESTED_AT_KEY = "cc_step_up_requested_at";
+const REARM_PENDING_KEY = "cc_rearm_pending";
+const REARM_RETURN_TO_KEY = "cc_rearm_return_to";
+const REARM_REQUESTED_AT_KEY = "cc_rearm_requested_at";
 const AGENT_RUN_ID_KEY = "cc_agent_run_id";
 const GITHUB_CONNECTION =
   (import.meta.env.VITE_AUTH0_CONNECTION_GITHUB as string) || "github";
@@ -100,11 +108,12 @@ const navClassName = ({ isActive }: { isActive: boolean }) =>
 
 const navItems = [
   { to: "/", label: "Home", icon: Home },
-  { to: "/allow-list", label: "Allow-list", icon: ListChecks },
+  { to: "/access", label: "Access", icon: ShieldCheck },
+  { to: "/allow-list", label: "Repositories", icon: ListChecks },
   { to: "/policies", label: "Policies", icon: ClipboardList },
   { to: "/agent", label: "Agent", icon: Bot },
   { to: "/audit", label: "Audit", icon: Eye },
-  { to: "/llm-audit", label: "LLM Trace", icon: Sparkles },
+  { to: "/llm-audit", label: "AI Activity", icon: Sparkles },
 ] as const;
 
 export default function App() {
@@ -113,6 +122,7 @@ export default function App() {
   const navigate = useNavigate();
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [me, setMe] = useState<Me | null>(null);
+  const [accessState, setAccessState] = useState<AccessState | null>(null);
   const [policies, setPolicies] = useState<Policy[]>(DEFAULTS);
   const [allowedReposText, setAllowedReposText] = useState("");
   const [githubRepos, setGithubRepos] = useState<GithubRepoPreview[]>([]);
@@ -141,10 +151,15 @@ export default function App() {
   const [policySyncing, setPolicySyncing] = useState(false);
   const [policyToast, setPolicyToast] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [lockdownBusy, setLockdownBusy] = useState(false);
   const [routeSkeletonVisible, setRouteSkeletonVisible] = useState(false);
   const [stepUpPending, setStepUpPending] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(STEP_UP_PENDING_KEY) === "1";
+  });
+  const [rearmPending, setRearmPending] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(REARM_PENDING_KEY) === "1";
   });
 
   const [agentTask, setAgentTask] = useState("");
@@ -177,8 +192,9 @@ export default function App() {
     setRefreshing(true);
     try {
       const accessToken = await getApiToken();
-      const [meRes, policiesRes, allowedRes, auditRes, llmAuditRes, identitiesRes] = await Promise.all([
+      const [meRes, accessRes, policiesRes, allowedRes, auditRes, llmAuditRes, identitiesRes] = await Promise.all([
         getMe(accessToken),
+        getAccessState(accessToken),
         getPolicies(accessToken),
         getAllowedRepos(accessToken),
         getAudit(accessToken, 25),
@@ -187,6 +203,7 @@ export default function App() {
       ]);
 
       setMe(meRes as Me);
+      setAccessState((accessRes || null) as AccessState | null);
       setAllowedReposText(Array.isArray(allowedRes) ? allowedRes.join("\n") : "");
       setAudit(Array.isArray(auditRes) ? (auditRes as AuditEntry[]) : []);
       setLlmAudit(Array.isArray(llmAuditRes) ? (llmAuditRes as LlmAuditEntry[]) : []);
@@ -288,6 +305,48 @@ export default function App() {
     return parsed;
   }
 
+  function storeRearmPending(pending: boolean) {
+    if (typeof window === "undefined") return;
+    if (pending) {
+      window.localStorage.setItem(REARM_PENDING_KEY, "1");
+    } else {
+      window.localStorage.removeItem(REARM_PENDING_KEY);
+    }
+    setRearmPending(pending);
+  }
+
+  function hasPendingRearm() {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(REARM_PENDING_KEY) === "1";
+  }
+
+  function storeRearmReturnTo(returnTo: string | null) {
+    if (typeof window === "undefined") return;
+    if (returnTo) {
+      window.localStorage.setItem(REARM_RETURN_TO_KEY, returnTo);
+    } else {
+      window.localStorage.removeItem(REARM_RETURN_TO_KEY);
+    }
+  }
+
+  function storeRearmRequestedAtMs(value: number | null) {
+    if (typeof window === "undefined") return;
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      window.localStorage.setItem(REARM_REQUESTED_AT_KEY, String(Math.floor(value)));
+    } else {
+      window.localStorage.removeItem(REARM_REQUESTED_AT_KEY);
+    }
+  }
+
+  function getRearmRequestedAtMs() {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(REARM_REQUESTED_AT_KEY);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  }
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (agentRunId) {
@@ -319,6 +378,49 @@ export default function App() {
       const remaining = new Date(stepUpExpiresAt).getTime() - Date.now();
       const nextRemaining = Math.max(0, remaining);
       setStepUpRemainingMs(nextRemaining);
+
+      if (nextRemaining === 0) {
+        setStepUpId(null);
+        setStepUpExpiresAt(null);
+        setAccessState((prev) => {
+          if (!prev) return prev;
+          const nextTools = prev.tools.map((tool) => {
+            if (!tool.requiresStepUp) return tool;
+
+            const blockedReasons = tool.blockedReasons.includes(
+              "Requires active step-up session",
+            )
+              ? tool.blockedReasons
+              : [...tool.blockedReasons, "Requires active step-up session"];
+
+            return {
+              ...tool,
+              canExecuteNow: false,
+              blockedReasons,
+              policyEvaluations: tool.policyEvaluations.map((rule) =>
+                rule.rule.endsWith("-step-up")
+                  ? {
+                      ...rule,
+                      result: "FAIL" as const,
+                      detail: "High-risk tool requires active MFA Step-Up",
+                    }
+                  : rule,
+              ),
+            };
+          });
+
+          return {
+            ...prev,
+            stepUp: {
+              active: false,
+              id: null,
+              expiresAt: null,
+              remainingMs: 0,
+            },
+            tools: nextTools,
+          };
+        });
+      }
     }, 1000);
 
     return () => window.clearInterval(intervalId);
@@ -345,6 +447,12 @@ export default function App() {
         const accessToken = await getApiToken();
         const r = await getAgentRun(accessToken, agentRunId);
         if (!active) return;
+        if (r?.status === "not_found") {
+          setAgentRunId(null);
+          setAgentRun(null);
+          setAgentMessages([]);
+          return;
+        }
         if (r?.run) {
           const run = r.run as AgentRun;
           setAgentRun(run);
@@ -364,51 +472,60 @@ export default function App() {
   async function sendAgentMessage() {
     const message = agentTask.trim();
     if (!message) return;
-    const accessToken = await getApiToken();
+    try {
+      const accessToken = await getApiToken();
 
-    if (!agentRunId || ["COMPLETED", "ERROR"].includes(agentRun?.status ?? "")) {
-      const r = await runAgent(accessToken, {
-        requestId: uuid(),
-        task: message,
-        context: {},
+      if (!agentRunId || ["COMPLETED", "ERROR"].includes(agentRun?.status ?? "")) {
+        const r = await runAgent(accessToken, {
+          requestId: uuid(),
+          task: message,
+          context: {},
+        });
+        if (r?.run) {
+          const run = r.run as AgentRun;
+          setAgentRunId(run.id);
+          setAgentRun(run);
+          setAgentMessages(run.messages || []);
+        }
+        setAgentTask("");
+        return;
+      }
+
+      if (agentRun?.status === "WAITING_APPROVAL") {
+        const r = await runAgent(accessToken, {
+          requestId: uuid(),
+          task: message,
+          context: {},
+        });
+        if (r?.run) {
+          const run = r.run as AgentRun;
+          setAgentRunId(run.id);
+          setAgentRun(run);
+          setAgentMessages(run.messages || []);
+        }
+        setApprovalError(null);
+        setAgentTask("");
+        return;
+      }
+
+      const r = await continueAgent(accessToken, {
+        runId: agentRunId,
+        message,
       });
       if (r?.run) {
         const run = r.run as AgentRun;
-        setAgentRunId(run.id);
         setAgentRun(run);
         setAgentMessages(run.messages || []);
       }
       setAgentTask("");
-      return;
-    }
-
-    if (agentRun?.status === "WAITING_APPROVAL") {
-      const r = await runAgent(accessToken, {
-        requestId: uuid(),
-        task: message,
-        context: {},
-      });
-      if (r?.run) {
-        const run = r.run as AgentRun;
-        setAgentRunId(run.id);
-        setAgentRun(run);
-        setAgentMessages(run.messages || []);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Agent action failed.";
+      if (message.toLowerCase().includes("disarmed") || message.includes("423")) {
+        setApprovalError("Agent is DISARMED by Session Lockdown. Re-arm to continue.");
+      } else {
+        setApprovalError(message);
       }
-      setApprovalError(null);
-      setAgentTask("");
-      return;
     }
-
-    const r = await continueAgent(accessToken, {
-      runId: agentRunId,
-      message,
-    });
-    if (r?.run) {
-      const run = r.run as AgentRun;
-      setAgentRun(run);
-      setAgentMessages(run.messages || []);
-    }
-    setAgentTask("");
   }
 
   async function saveAllowedRepos() {
@@ -452,10 +569,41 @@ export default function App() {
       const accessToken = await getApiToken();
       await putPolicies(accessToken, policies);
       await refresh();
-      setPolicyToast("[SYSTEM]: Policy manifest synced to Agent Node.");
+      setPolicyToast("Policy settings updated.");
     } finally {
       setPolicySyncing(false);
     }
+  }
+
+  async function triggerLockdown() {
+    try {
+      setLockdownBusy(true);
+      const accessToken = await getApiToken();
+      await lockAgentSession(accessToken, "Manual panic lockdown from Access view");
+      setPolicyToast("Lockdown enabled. Agent session paused.");
+      await refresh();
+    } finally {
+      setLockdownBusy(false);
+    }
+  }
+
+  async function rearmAgent() {
+    const returnTo = `${location.pathname}${location.search || ""}`;
+    storeRearmReturnTo(returnTo || "/access");
+    storeRearmRequestedAtMs(Date.now());
+    storeRearmPending(true);
+    setPolicyToast("Verification required to restore agent access.");
+    await loginWithRedirect({
+      appState: { returnTo: returnTo || "/access" },
+      authorizationParams: {
+        redirect_uri: window.location.origin,
+        audience: "https://control-center-api",
+        prompt: "login",
+        max_age: 0,
+        acr_values:
+          "http://schemas.openid.net/pape/policies/2007/06/multi-factor",
+      },
+    });
   }
 
   useEffect(() => {
@@ -692,6 +840,21 @@ export default function App() {
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
+    if (!hasPendingRearm()) return;
+
+    const stored =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem(REARM_RETURN_TO_KEY)
+        : null;
+    const target = stored && stored.startsWith("/") ? stored : "/access";
+    const current = `${location.pathname}${location.search || ""}`;
+    if (current !== target) {
+      navigate(target, { replace: true });
+    }
+  }, [authLoading, isAuthenticated, location.pathname, location.search, navigate]);
+
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
     if (!hasPendingStepUp()) return;
 
     let active = true;
@@ -737,6 +900,39 @@ export default function App() {
       active = false;
     };
   }, [authLoading, getApiToken, isAuthenticated, refresh, agentRunId, pendingApprovalStatus]);
+
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    if (!hasPendingRearm()) return;
+
+    let active = true;
+    (async () => {
+      try {
+        setLockdownBusy(true);
+        const accessToken = await getApiToken();
+        await armAgentSession(accessToken, getRearmRequestedAtMs());
+        if (!active) return;
+        setPolicyToast("Agent session restored.");
+        await refresh();
+      } catch (err: unknown) {
+        if (!active) return;
+        const message =
+          err instanceof Error ? err.message : "Re-arm verification failed.";
+        setPolicyToast(`Security update: ${message}`);
+      } finally {
+        if (active) {
+          setLockdownBusy(false);
+        }
+        storeRearmPending(false);
+        storeRearmReturnTo(null);
+        storeRearmRequestedAtMs(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [authLoading, getApiToken, isAuthenticated, refresh]);
 
   useEffect(() => {
     if (!isAuthenticated || authLoading) return;
@@ -792,7 +988,7 @@ export default function App() {
 
   const showAuthTransitionGate =
     authLoading ||
-    (!isAuthenticated && (Boolean(linkProvider) || stepUpPending));
+    (!isAuthenticated && (Boolean(linkProvider) || stepUpPending || rearmPending));
 
   if (showAuthTransitionGate) {
     return (
@@ -809,6 +1005,19 @@ export default function App() {
       onSave={saveAllowedRepos}
       githubRepos={githubRepos}
       loadingRepos={loadingGithubRepos}
+    />
+  );
+
+  const accessSection = (
+    <AccessSection
+      accessState={accessState}
+      loading={refreshing}
+      onRefresh={refresh}
+      onStartStepUp={doStepUp}
+      stepUpPending={stepUpPending}
+      onLockdown={triggerLockdown}
+      onRearm={rearmAgent}
+      lockdownBusy={lockdownBusy}
     />
   );
 
@@ -829,6 +1038,8 @@ export default function App() {
       allowedReposCount={allowedReposText ? allowedReposText.split("\n").filter(Boolean).length : 0}
       policiesCount={policies.length}
       auditCount={audit.length}
+      auditEntries={audit}
+      llmEntries={llmAudit}
       stepUpActive={stepUpActive}
       identities={identities}
       userId={me?.userId}
@@ -862,6 +1073,13 @@ export default function App() {
         pending: stepUpPending,
       }}
       onStartStepUp={doStepUp}
+      agentHealth={
+        accessState?.agentHealth || {
+          status: "STANDBY",
+          disarmedAt: null,
+          reason: null,
+        }
+      }
     />
   );
 
@@ -898,11 +1116,23 @@ export default function App() {
   );
 
   const agentStatusLabel =
-    agentRun?.status === "RUNNING" ||
-    agentRun?.status === "WAITING_APPROVAL" ||
-    agentRun?.status === "NEEDS_INPUT"
-      ? "PROCESSING"
-      : "STANDBY";
+    accessState?.agentHealth?.status === "DISARMED"
+      ? "DISARMED"
+      : agentRun?.status === "RUNNING" ||
+          agentRun?.status === "WAITING_APPROVAL" ||
+          agentRun?.status === "NEEDS_INPUT"
+        ? "PROCESSING"
+        : "STANDBY";
+  const sectionLabelMap: Record<string, string> = {
+    "/": "Home",
+    "/access": "Access",
+    "/allow-list": "Repositories",
+    "/policies": "Policies",
+    "/agent": "Agent",
+    "/audit": "Activity Audit",
+    "/llm-audit": "AI Activity",
+  };
+  const currentSectionLabel = sectionLabelMap[location.pathname] || "Home";
   const identityLabel = user?.email ?? user?.name ?? user?.sub ?? "Account";
   const identityInitial = identityLabel.charAt(0).toUpperCase();
   const startLogin = () =>
@@ -955,7 +1185,20 @@ export default function App() {
               exit={{ opacity: 0, y: 12 }}
               className="fixed bottom-20 right-5 z-70 rounded-xl border border-amber-300/35 bg-[#15110a]/90 px-4 py-3 font-mono text-sm text-amber-100 shadow-[0_0_24px_rgba(255,184,0,0.2)]"
             >
-              [SECURITY]: Step-up in progress. Complete Auth0 verification.
+              Verification in progress. Complete sign-in to continue.
+            </m.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {rearmPending && isAuthenticated ? (
+            <m.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              className="fixed bottom-35 right-5 z-70 rounded-xl border border-rose-300/35 bg-[#1a0f12]/90 px-4 py-3 font-mono text-sm text-rose-100 shadow-[0_0_24px_rgba(244,63,94,0.2)]"
+            >
+              Verification in progress to restore agent access.
             </m.div>
           ) : null}
         </AnimatePresence>
@@ -996,18 +1239,18 @@ export default function App() {
           >
             <m.div className="min-w-0 lg:justify-self-start">
               <div className="text-[11px] uppercase tracking-[0.2em] text-fuchsia-200/85">
-                From prompt to action, safely.
+                Secure by design.
               </div>
               <h1
                 className={`mt-1 max-w-[12ch] bg-linear-to-r from-white via-slate-100 to-slate-400 bg-clip-text font-['Syne',sans-serif] text-4xl leading-[0.92] font-extrabold tracking-[-0.035em] text-transparent [text-shadow:0_0_18px_rgba(255,255,255,0.14)] md:text-5xl lg:text-4xl xl:text-5xl ${
                   isAuthenticated ? "opacity-100" : "opacity-80"
                 }`}
               >
-                FlowSnap Control Plane
+                Agent Operations
               </h1>
               <div className="mt-1 inline-flex items-center gap-2 text-[13px] font-medium text-cyan-100/75">
                 <GitBranch className="h-3.5 w-3.5" />
-                Immersive governance for AI actions
+                Secure operations for connected workflows
               </div>
             </m.div>
 
@@ -1063,6 +1306,9 @@ export default function App() {
                   </div>
                   <div className="rounded-full border border-cyan-300/35 bg-cyan-300/12 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-100 shadow-[0_0_10px_rgba(64,224,255,0.2)]">
                     Agent: {agentStatusLabel}
+                  </div>
+                  <div className="rounded-full border border-white/20 bg-white/6 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-200">
+                    Section: {currentSectionLabel}
                   </div>
                 </>
               )}
@@ -1135,13 +1381,13 @@ export default function App() {
               <div className="relative z-10 mx-auto w-full max-w-4xl">
                 <div className="rounded-4xl border border-white/20 bg-[#0f1623]/72 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-9">
                   <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-300/12 px-3 py-1 text-xs uppercase tracking-[0.15em] text-cyan-100">
-                    Private Control Plane
+                    Enterprise Agent Governance
                   </div>
                   <h2 className="mt-4 max-w-3xl text-4xl font-black tracking-[-0.03em] text-white md:text-6xl md:leading-[1.02]">
-                    The Secure Control Plane for Autonomous Agents.
+                    Trusted AI operations for security-first teams.
                   </h2>
                   <p className="mt-4 max-w-2xl text-base text-slate-200 md:text-lg">
-                    Link identities, govern tool permissions, and inspect every agent decision before action reaches production.
+                    Enforce policy controls, require verification for sensitive actions, and audit every decision in real time.
                   </p>
 
                   <m.button
@@ -1153,7 +1399,7 @@ export default function App() {
                     onClick={startLogin}
                     className="mt-6 inline-flex items-center gap-2 rounded-full border border-cyan-200/50 bg-cyan-300 px-7 py-3 text-base font-black text-black shadow-[0_0_20px_rgba(6,182,212,0.3)]"
                   >
-                    Enter Control Plane
+                    Start Secure Session
                   </m.button>
 
                   <div className="mt-6 grid gap-3 md:grid-cols-3">
@@ -1165,7 +1411,7 @@ export default function App() {
                         Identity
                       </div>
                       <p className="mt-2 text-xs text-slate-300">
-                        Link GitHub and Slack through the Auth0 Token Vault.
+                        Connect provider identities with secure session boundaries.
                       </p>
                     </div>
                     <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
@@ -1176,7 +1422,7 @@ export default function App() {
                         Governance
                       </div>
                       <p className="mt-2 text-xs text-slate-300">
-                        Apply fine-grained tool policies with explicit risk gates.
+                        Apply granular policies and approvals for high-risk actions.
                       </p>
                     </div>
                     <div className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-cyan-500/30">
@@ -1187,7 +1433,7 @@ export default function App() {
                         Observability
                       </div>
                       <p className="mt-2 text-xs text-slate-300">
-                        Review full LLM traces and policy audit logs in one timeline.
+                        Track policy outcomes and AI reasoning with complete audit history.
                       </p>
                     </div>
                   </div>
@@ -1205,6 +1451,7 @@ export default function App() {
               >
                 <Routes location={location}>
                   <Route path="/" element={dashboard} />
+                  <Route path="/access" element={accessSection} />
                   <Route path="/allow-list" element={allowListSection} />
                   <Route path="/policies" element={showRouteSkeleton ? routeSkeleton : policiesSection} />
                   <Route path="/agent" element={agentSection} />

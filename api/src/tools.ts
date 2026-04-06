@@ -163,6 +163,26 @@ export async function listAllTools(userId: string): Promise<ToolDefinition[]> {
       name: "intent_list_my_repos",
       description:
         "Use this to show the user their own GitHub repositories. Requires NO input.",
+import {
+  githubCloseIssue,
+  githubCommentIssue,
+  githubCreateIssue,
+  githubCreateIssueWithAssignee,
+  githubListIssues,
+  githubListPulls,
+  githubListRepos,
+  githubReopenIssue,
+  parseRepo,
+} from "./services/github";
+import { slackPostMessage } from "./services/slack";
+import { slackLookupUserByEmail, slackOpenDm } from "./services/slack";
+import { recordAnnouncement } from "./slack-intake";
+
+export function listLocalTools(): ToolDefinition[] {
+  return [
+    {
+      name: "github_explorer",
+      domain: "github",
       needsRepo: false,
       defaultRisk: "LOW",
       defaultMode: "AUTO",
@@ -394,6 +414,8 @@ export async function listAllTools(userId: string): Promise<ToolDefinition[]> {
       name: "intent_create_branch",
       description:
         "Use this to create a new branch in a repository. Requires repo and branchName, optional fromBranch.",
+      name: "manage_issues",
+      domain: "github",
       needsRepo: true,
       defaultRisk: "LOW",
       defaultMode: "AUTO",
@@ -736,6 +758,8 @@ export async function listAllTools(userId: string): Promise<ToolDefinition[]> {
       name: "intent_find_my_repos",
       description:
         "Use this to find repositories by name within the user's own GitHub account. Requires a specific query.",
+      name: "slack_notifier",
+      domain: "slack",
       needsRepo: false,
       defaultRisk: "LOW",
       defaultMode: "AUTO",
@@ -878,6 +902,8 @@ export async function listAllTools(userId: string): Promise<ToolDefinition[]> {
   );
 
   return [...facadeTools, ...filteredRawTools];
+export async function listAllTools() {
+  return listLocalTools();
 }
 
 export function getToolIndex(tools: ToolDefinition[]) {
