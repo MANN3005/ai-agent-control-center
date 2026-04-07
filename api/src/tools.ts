@@ -13,7 +13,11 @@ import {
   githubReopenIssue,
   parseRepo,
 } from "./services/github";
-import { slackLookupUserByEmail, slackOpenDm, slackPostMessage } from "./services/slack";
+import {
+  slackLookupUserByEmail,
+  slackOpenDm,
+  slackPostMessage,
+} from "./services/slack";
 import { recordAnnouncement } from "./slack-intake";
 
 type SupportedProvider = "github" | "slack";
@@ -25,9 +29,15 @@ type McpTool = {
 };
 
 type RiskLevel = ToolDefinition["defaultRisk"];
-const MCP_DISCOVERY_TIMEOUT_MS = Number(process.env.MCP_DISCOVERY_TIMEOUT_MS || 2500);
+const MCP_DISCOVERY_TIMEOUT_MS = Number(
+  process.env.MCP_DISCOVERY_TIMEOUT_MS || 2500,
+);
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
@@ -308,7 +318,9 @@ export function listLocalTools(): ToolDefinition[] {
           },
           body: JSON.stringify({
             name,
-            description: input.description ? String(input.description) : undefined,
+            description: input.description
+              ? String(input.description)
+              : undefined,
             private: Boolean(input.private),
             auto_init: Boolean(input.auto_init),
           }),
@@ -367,7 +379,9 @@ export function listLocalTools(): ToolDefinition[] {
 
         const state = String(input.state || "open").toLowerCase();
         if (!["open", "closed", "all"].includes(state)) {
-          throw new Error("INPUT_VALIDATION:state:state must be open, closed, or all");
+          throw new Error(
+            "INPUT_VALIDATION:state:state must be open, closed, or all",
+          );
         }
 
         const token = await getGithubAccessToken(handlerUserId);
@@ -469,19 +483,25 @@ export function listLocalTools(): ToolDefinition[] {
         let fromBranch = String(input.fromBranch || "").trim();
 
         if (!fromBranch) {
-          const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-            headers: {
-              Accept: "application/vnd.github+json",
-              Authorization: `Bearer ${token}`,
+          const repoRes = await fetch(
+            `https://api.github.com/repos/${owner}/${repo}`,
+            {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${token}`,
+              },
             },
-          });
+          );
           if (!repoRes.ok) {
             throw new Error(
               `Failed to load repository metadata for ${owner}/${repo} (status ${repoRes.status})`,
             );
           }
-          const repoMeta = (await repoRes.json()) as { default_branch?: string };
-          fromBranch = String(repoMeta.default_branch || "main").trim() || "main";
+          const repoMeta = (await repoRes.json()) as {
+            default_branch?: string;
+          };
+          fromBranch =
+            String(repoMeta.default_branch || "main").trim() || "main";
         }
 
         const baseRefRes = await fetch(
@@ -498,7 +518,9 @@ export function listLocalTools(): ToolDefinition[] {
             `INPUT_VALIDATION:fromBranch:Base branch '${fromBranch}' was not found in ${owner}/${repo}.`,
           );
         }
-        const baseRef = (await baseRefRes.json()) as { object?: { sha?: string } };
+        const baseRef = (await baseRefRes.json()) as {
+          object?: { sha?: string };
+        };
         const sha = String(baseRef?.object?.sha || "").trim();
         if (!sha) {
           throw new Error("Failed to resolve base branch commit SHA");
@@ -646,7 +668,10 @@ export function listLocalTools(): ToolDefinition[] {
       inputSchema: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["create", "close", "reopen", "comment"] },
+          action: {
+            type: "string",
+            enum: ["create", "close", "reopen", "comment"],
+          },
           repo: { type: "string" },
           title: { type: "string" },
           body: { type: "string" },
@@ -690,7 +715,9 @@ export function listLocalTools(): ToolDefinition[] {
           );
 
           if (repoMetaRes.ok) {
-            const repoMeta = (await repoMetaRes.json()) as { has_issues?: boolean };
+            const repoMeta = (await repoMetaRes.json()) as {
+              has_issues?: boolean;
+            };
             if (repoMeta.has_issues === false) {
               throw new Error(
                 `ISSUES_DISABLED:${owner}/${repo}:GitHub Issues is disabled for this repository`,
@@ -716,7 +743,11 @@ export function listLocalTools(): ToolDefinition[] {
                 "INPUT_VALIDATION:title:GitHub rejected the issue payload. Provide a specific title and try again.",
               );
             }
-            if (/issues\s+has\s+been\s+disabled\s+in\s+this\s+repository/i.test(message)) {
+            if (
+              /issues\s+has\s+been\s+disabled\s+in\s+this\s+repository/i.test(
+                message,
+              )
+            ) {
               throw new Error(
                 `ISSUES_DISABLED:${owner}/${repo}:GitHub Issues is disabled for this repository`,
               );
@@ -725,9 +756,13 @@ export function listLocalTools(): ToolDefinition[] {
           }
         }
 
-        const issueNumber = Number(input.issue_number || input.issueNumber || 0);
+        const issueNumber = Number(
+          input.issue_number || input.issueNumber || 0,
+        );
         if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-          throw new Error("issue_number is required for close, reopen, or comment");
+          throw new Error(
+            "issue_number is required for close, reopen, or comment",
+          );
         }
 
         if (action === "comment") {
@@ -802,7 +837,9 @@ export function listLocalTools(): ToolDefinition[] {
           throw new Error("GitHub login was not available for current user");
         }
 
-        const query = String(input.query || "").trim().toLowerCase();
+        const query = String(input.query || "")
+          .trim()
+          .toLowerCase();
         if (!query) {
           throw new Error("query is required for intent_find_my_repos");
         }
@@ -879,52 +916,56 @@ export async function listAllTools(userId?: string): Promise<ToolDefinition[]> {
     listProviderTools(userId, "slack"),
   ]).catch((error) => {
     console.warn("[MCP] Discovery fallback to local tools:", error);
-    return [[], []] as Array<Array<{ provider: SupportedProvider; tool: McpTool }>>;
+    return [[], []] as Array<
+      Array<{ provider: SupportedProvider; tool: McpTool }>
+    >;
   });
 
-  const mappedMcpTools = discovered.flat().map(({ provider, tool: mcpTool }) => {
-    const defaultRisk = inferRiskLevel(mcpTool);
-    let enrichedDescription = mcpTool.description || "";
-    const name = mcpTool.name.toLowerCase();
+  const mappedMcpTools = discovered
+    .flat()
+    .map(({ provider, tool: mcpTool }) => {
+      const defaultRisk = inferRiskLevel(mcpTool);
+      let enrichedDescription = mcpTool.description || "";
+      const name = mcpTool.name.toLowerCase();
 
-    if (name.includes("search")) {
-      enrichedDescription +=
-        "\n\nCRITICAL RULE: NEVER use generic wildcards like '*'. You MUST extract specific nouns from the user's prompt for the query.";
-    } else if (name.includes("create") || name.includes("post")) {
-      enrichedDescription +=
-        "\n\nCRITICAL RULE: You MUST provide highly specific, non-generic data for titles and descriptions based on user intent.";
-    }
+      if (name.includes("search")) {
+        enrichedDescription +=
+          "\n\nCRITICAL RULE: NEVER use generic wildcards like '*'. You MUST extract specific nouns from the user's prompt for the query.";
+      } else if (name.includes("create") || name.includes("post")) {
+        enrichedDescription +=
+          "\n\nCRITICAL RULE: You MUST provide highly specific, non-generic data for titles and descriptions based on user intent.";
+      }
 
-    return {
-      name: `${provider}_${mcpTool.name}`,
-      description: enrichedDescription,
-      inputSchema: mcpTool.inputSchema ?? null,
-      needsRepo: inferNeedsRepo(provider, mcpTool),
-      defaultRisk,
-      defaultMode: mapDefaultMode(defaultRisk),
-      handler: async (handlerUserId: string, input: Record<string, any>) => {
-        const client = await createMcpClient(handlerUserId, provider);
-        if (!client) {
-          throw new Error(`Unable to connect to ${provider} MCP server`);
-        }
-        try {
-          const result = await client.callTool({
-            name: mcpTool.name,
-            arguments: input,
-          });
-          return {
-            executedTool: mcpTool.name,
-            provider,
-            content: result.content,
-          };
-        } finally {
-          if (typeof (client as any).close === "function") {
-            await (client as any).close();
+      return {
+        name: `${provider}_${mcpTool.name}`,
+        description: enrichedDescription,
+        inputSchema: mcpTool.inputSchema ?? null,
+        needsRepo: inferNeedsRepo(provider, mcpTool),
+        defaultRisk,
+        defaultMode: mapDefaultMode(defaultRisk),
+        handler: async (handlerUserId: string, input: Record<string, any>) => {
+          const client = await createMcpClient(handlerUserId, provider);
+          if (!client) {
+            throw new Error(`Unable to connect to ${provider} MCP server`);
           }
-        }
-      },
-    };
-  });
+          try {
+            const result = await client.callTool({
+              name: mcpTool.name,
+              arguments: input,
+            });
+            return {
+              executedTool: mcpTool.name,
+              provider,
+              content: result.content,
+            };
+          } finally {
+            if (typeof (client as any).close === "function") {
+              await (client as any).close();
+            }
+          }
+        },
+      };
+    });
 
   // Keep only safe/simple raw MCP tools to reduce prompt/context bloat.
   const filteredRawTools = mappedMcpTools.filter((tool) =>
