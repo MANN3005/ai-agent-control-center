@@ -1388,6 +1388,13 @@ export async function runAgentLoop(runId: string) {
 
         if (responseBody.reason === "Repo not allow-listed") {
           run.status = "NEEDS_INPUT";
+          run.pendingRectify = {
+            frozenToolCall: {
+              tool: step.tool,
+              input: { ...(step.input || {}) },
+            },
+            missingField: "repo",
+          };
           trace(run, "status", "Waiting for allow-listed repo");
           run.messages.push({
             role: "agent",

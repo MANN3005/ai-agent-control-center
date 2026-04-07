@@ -562,18 +562,30 @@ export default function App() {
 
   async function addAllowListedRepo(repo: string) {
     const accessToken = await getApiToken();
-    const current = allowedReposText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const next = Array.from(new Set([...current, repo]));
+    const trimmedRepo = String(repo || "").trim();
+    const normalizedLower = trimmedRepo.toLowerCase();
+    const canonicalRepo = githubRepos.find((item) => {
+      const full = String(item.fullName || "").trim();
+      const name = String(item.name || "").trim();
+      return (
+        full.toLowerCase() === normalizedLower ||
+        name.toLowerCase() === normalizedLower ||
+        full.toLowerCase().endsWith(`/${normalizedLower}`)
+      );
+    })?.fullName || trimmedRepo;
+
+    const existing = await getAllowedRepos(accessToken);
+    const current = Array.isArray(existing)
+      ? existing.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const next = Array.from(new Set([...current, canonicalRepo]));
     await putAllowedRepos(accessToken, next);
     await refresh();
 
-    if (agentRunId && agentRun?.status === "NEEDS_INPUT") {
+    if (agentRunId && agentRun?.status !== "RUNNING") {
       const r = await continueAgent(accessToken, {
         runId: agentRunId,
-        message: repo,
+        message: canonicalRepo,
       });
       if (r?.run) {
         const run = r.run as AgentRun;
