@@ -50,7 +50,11 @@ export function getLlmClient() {
 export function getLlmModel(defaultModel = "gemini-3.1-pro-preview") {
   const provider = resolveProvider();
   if (provider === "groq") {
-    return process.env.GROQ_MODEL || process.env.LLM_MODEL || "llama-3.3-70b-versatile";
+    return (
+      process.env.GROQ_MODEL ||
+      process.env.LLM_MODEL ||
+      "llama-3.3-70b-versatile"
+    );
   }
 
   return process.env.GEMINI_MODEL || process.env.LLM_MODEL || defaultModel;

@@ -490,6 +490,11 @@ export default function App() {
   async function sendAgentMessage() {
     const message = agentTask.trim();
     if (!message) return;
+
+    // Optimistic UI: show the message immediately while backend processing happens.
+    setAgentTask("");
+    setAgentMessages((prev) => [...prev, { role: "user", text: message }]);
+
     try {
       const accessToken = await getApiToken();
 
@@ -505,7 +510,6 @@ export default function App() {
           setAgentRun(run);
           setAgentMessages(run.messages || []);
         }
-        setAgentTask("");
         return;
       }
 
@@ -522,7 +526,6 @@ export default function App() {
           setAgentMessages(run.messages || []);
         }
         setApprovalError(null);
-        setAgentTask("");
         return;
       }
 
@@ -535,7 +538,6 @@ export default function App() {
         setAgentRun(run);
         setAgentMessages(run.messages || []);
       }
-      setAgentTask("");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Agent action failed.";
       if (message.toLowerCase().includes("disarmed") || message.includes("423")) {

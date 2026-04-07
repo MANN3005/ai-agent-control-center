@@ -32,6 +32,12 @@ type RiskLevel = ToolDefinition["defaultRisk"];
 const MCP_DISCOVERY_TIMEOUT_MS = Number(
   process.env.MCP_DISCOVERY_TIMEOUT_MS || 2500,
 );
+const TOOLS_CACHE_TTL_MS = Number(process.env.TOOLS_CACHE_TTL_MS || 60000);
+const TOOLS_CACHE = new Map<
+  string,
+  { at: number; tools: ToolDefinition[] }
+>();
+const TOOLS_INFLIGHT = new Map<string, Promise<ToolDefinition[]>>();
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -911,68 +917,91 @@ export async function listAllTools(userId?: string): Promise<ToolDefinition[]> {
     return facadeTools;
   }
 
-  const discovered = await Promise.all([
-    listProviderTools(userId, "github"),
-    listProviderTools(userId, "slack"),
-  ]).catch((error) => {
-    console.warn("[MCP] Discovery fallback to local tools:", error);
-    return [[], []] as Array<
-      Array<{ provider: SupportedProvider; tool: McpTool }>
-    >;
-  });
+  const now = Date.now();
+  const cached = TOOLS_CACHE.get(userId);
+  if (cached && now - cached.at < TOOLS_CACHE_TTL_MS) {
+    return cached.tools;
+  }
 
-  const mappedMcpTools = discovered
-    .flat()
-    .map(({ provider, tool: mcpTool }) => {
-      const defaultRisk = inferRiskLevel(mcpTool);
-      let enrichedDescription = mcpTool.description || "";
-      const name = mcpTool.name.toLowerCase();
+  const inflight = TOOLS_INFLIGHT.get(userId);
+  if (inflight) {
+    return inflight;
+  }
 
-      if (name.includes("search")) {
-        enrichedDescription +=
-          "\n\nCRITICAL RULE: NEVER use generic wildcards like '*'. You MUST extract specific nouns from the user's prompt for the query.";
-      } else if (name.includes("create") || name.includes("post")) {
-        enrichedDescription +=
-          "\n\nCRITICAL RULE: You MUST provide highly specific, non-generic data for titles and descriptions based on user intent.";
-      }
-
-      return {
-        name: `${provider}_${mcpTool.name}`,
-        description: enrichedDescription,
-        inputSchema: mcpTool.inputSchema ?? null,
-        needsRepo: inferNeedsRepo(provider, mcpTool),
-        defaultRisk,
-        defaultMode: mapDefaultMode(defaultRisk),
-        handler: async (handlerUserId: string, input: Record<string, any>) => {
-          const client = await createMcpClient(handlerUserId, provider);
-          if (!client) {
-            throw new Error(`Unable to connect to ${provider} MCP server`);
-          }
-          try {
-            const result = await client.callTool({
-              name: mcpTool.name,
-              arguments: input,
-            });
-            return {
-              executedTool: mcpTool.name,
-              provider,
-              content: result.content,
-            };
-          } finally {
-            if (typeof (client as any).close === "function") {
-              await (client as any).close();
-            }
-          }
-        },
-      };
+  const resolveTools = (async () => {
+    const discovered = await Promise.all([
+      listProviderTools(userId, "github"),
+      listProviderTools(userId, "slack"),
+    ]).catch((error) => {
+      console.warn("[MCP] Discovery fallback to local tools:", error);
+      return [[], []] as Array<
+        Array<{ provider: SupportedProvider; tool: McpTool }>
+      >;
     });
 
-  // Keep only safe/simple raw MCP tools to reduce prompt/context bloat.
-  const filteredRawTools = mappedMcpTools.filter((tool) =>
-    tool.name.startsWith("slack_"),
-  );
+    const mappedMcpTools = discovered
+      .flat()
+      .map(({ provider, tool: mcpTool }) => {
+        const defaultRisk = inferRiskLevel(mcpTool);
+        let enrichedDescription = mcpTool.description || "";
+        const name = mcpTool.name.toLowerCase();
 
-  return [...facadeTools, ...filteredRawTools];
+        if (name.includes("search")) {
+          enrichedDescription +=
+            "\n\nCRITICAL RULE: NEVER use generic wildcards like '*'. You MUST extract specific nouns from the user's prompt for the query.";
+        } else if (name.includes("create") || name.includes("post")) {
+          enrichedDescription +=
+            "\n\nCRITICAL RULE: You MUST provide highly specific, non-generic data for titles and descriptions based on user intent.";
+        }
+
+        return {
+          name: `${provider}_${mcpTool.name}`,
+          description: enrichedDescription,
+          inputSchema: mcpTool.inputSchema ?? null,
+          needsRepo: inferNeedsRepo(provider, mcpTool),
+          defaultRisk,
+          defaultMode: mapDefaultMode(defaultRisk),
+          handler: async (handlerUserId: string, input: Record<string, any>) => {
+            const client = await createMcpClient(handlerUserId, provider);
+            if (!client) {
+              throw new Error(`Unable to connect to ${provider} MCP server`);
+            }
+            try {
+              const result = await client.callTool({
+                name: mcpTool.name,
+                arguments: input,
+              });
+              return {
+                executedTool: mcpTool.name,
+                provider,
+                content: result.content,
+              };
+            } finally {
+              if (typeof (client as any).close === "function") {
+                await (client as any).close();
+              }
+            }
+          },
+        };
+      });
+
+    // Keep only safe/simple raw MCP tools to reduce prompt/context bloat.
+    const filteredRawTools = mappedMcpTools.filter((tool) =>
+      tool.name.startsWith("slack_"),
+    );
+
+    const merged = [...facadeTools, ...filteredRawTools];
+    TOOLS_CACHE.set(userId, { at: Date.now(), tools: merged });
+    return merged;
+  })();
+
+  TOOLS_INFLIGHT.set(userId, resolveTools);
+
+  try {
+    return await resolveTools;
+  } finally {
+    TOOLS_INFLIGHT.delete(userId);
+  }
 }
 
 export function getToolIndex(tools: ToolDefinition[]) {
