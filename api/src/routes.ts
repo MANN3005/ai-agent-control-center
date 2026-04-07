@@ -1474,6 +1474,37 @@ export function registerRoutes(app: Express) {
       if (!step) {
         run.pendingFieldCapture = null;
       } else {
+        if (capture.field === "repo") {
+          const repoCandidate = String(message || "").trim();
+          if (repoCandidate.includes("/")) {
+            const normalizedRepo = repoCandidate
+              .replace(/^https?:\/\/github\.com\//i, "")
+              .replace(/\.git$/i, "")
+              .replace(/\/+$/, "")
+              .trim();
+            const parts = normalizedRepo.split("/").filter(Boolean);
+            if (parts.length === 2) {
+              await prisma.allowedResource.upsert({
+                where: {
+                  userId_provider_resourceType_resourceId: {
+                    userId,
+                    provider: "github",
+                    resourceType: "repo",
+                    resourceId: `${parts[0]}/${parts[1]}`,
+                  },
+                },
+                update: {},
+                create: {
+                  userId,
+                  provider: "github",
+                  resourceType: "repo",
+                  resourceId: `${parts[0]}/${parts[1]}`,
+                },
+              });
+            }
+          }
+        }
+
         step.input[capture.field] = parsePendingFieldAnswer(capture.field, message);
         step.input = resolveRepoFields(normalizeFields(step.input));
 
@@ -1512,6 +1543,37 @@ export function registerRoutes(app: Express) {
         tool: String(capture.frozenToolCall.tool || ""),
         input: { ...(capture.frozenToolCall.input || {}) },
       };
+
+      if (capture.missingField === "repo") {
+        const repoCandidate = String(message || "").trim();
+        if (repoCandidate.includes("/")) {
+          const normalizedRepo = repoCandidate
+            .replace(/^https?:\/\/github\.com\//i, "")
+            .replace(/\.git$/i, "")
+            .replace(/\/+$/, "")
+            .trim();
+          const parts = normalizedRepo.split("/").filter(Boolean);
+          if (parts.length === 2) {
+            await prisma.allowedResource.upsert({
+              where: {
+                userId_provider_resourceType_resourceId: {
+                  userId,
+                  provider: "github",
+                  resourceType: "repo",
+                  resourceId: `${parts[0]}/${parts[1]}`,
+                },
+              },
+              update: {},
+              create: {
+                userId,
+                provider: "github",
+                resourceType: "repo",
+                resourceId: `${parts[0]}/${parts[1]}`,
+              },
+            });
+          }
+        }
+      }
 
       let parsedAnswer: any = message.trim();
       if (
