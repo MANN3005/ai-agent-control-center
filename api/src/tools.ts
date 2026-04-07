@@ -33,10 +33,7 @@ const MCP_DISCOVERY_TIMEOUT_MS = Number(
   process.env.MCP_DISCOVERY_TIMEOUT_MS || 2500,
 );
 const TOOLS_CACHE_TTL_MS = Number(process.env.TOOLS_CACHE_TTL_MS || 60000);
-const TOOLS_CACHE = new Map<
-  string,
-  { at: number; tools: ToolDefinition[] }
->();
+const TOOLS_CACHE = new Map<string, { at: number; tools: ToolDefinition[] }>();
 const TOOLS_INFLIGHT = new Map<string, Promise<ToolDefinition[]>>();
 
 function withTimeout<T>(
@@ -961,7 +958,10 @@ export async function listAllTools(userId?: string): Promise<ToolDefinition[]> {
           needsRepo: inferNeedsRepo(provider, mcpTool),
           defaultRisk,
           defaultMode: mapDefaultMode(defaultRisk),
-          handler: async (handlerUserId: string, input: Record<string, any>) => {
+          handler: async (
+            handlerUserId: string,
+            input: Record<string, any>,
+          ) => {
             const client = await createMcpClient(handlerUserId, provider);
             if (!client) {
               throw new Error(`Unable to connect to ${provider} MCP server`);

@@ -1498,6 +1498,22 @@ export async function executeToolWithPolicy(
   approval: { confirmed: boolean; stepUpId: string | null },
   executionContext?: { githubToken?: string | null },
 ) {
+  const isPlaceholderOwner = (value: string) => {
+    const normalized = String(value || "")
+      .trim()
+      .toLowerCase();
+    return [
+      "owner",
+      "repo_owner",
+      "username",
+      "user",
+      "account",
+      "org",
+      "organization",
+      "github_user",
+    ].includes(normalized);
+  };
+
   input = normalizeStepInput(input || {});
   if ((input as any)[CF.BRANCH_NAME] && !(input as any).branchName) {
     (input as any).branchName = (input as any)[CF.BRANCH_NAME];
@@ -1513,7 +1529,14 @@ export async function executeToolWithPolicy(
     typeof (input as any)[CF.REPO_NAME] === "string" &&
     !(String((input as any)[CF.REPO_NAME] || "").includes("/"))
   ) {
-    (input as any)[CF.REPO_NAME] = `${String((input as any)[CF.REPO_OWNER]).trim()}/${String((input as any)[CF.REPO_NAME]).trim()}`;
+    const owner = String((input as any)[CF.REPO_OWNER] || "").trim();
+    const repo = String((input as any)[CF.REPO_NAME] || "").trim();
+    if (owner && !isPlaceholderOwner(owner)) {
+      (input as any)[CF.REPO_NAME] = `${owner}/${repo}`;
+    } else {
+      // Drop low-signal placeholder owners emitted by planner prompts.
+      delete (input as any)[CF.REPO_OWNER];
+    }
   }
 
   const tools = await listAllTools(userId);
@@ -1630,6 +1653,12 @@ export async function executeToolWithPolicy(
       if (matches.length === 1 && matches[0].fullName) {
         resolvedRepo = matches[0].fullName;
         (input as any).repo = resolvedRepo;
+        const parsed = parseRepo(resolvedRepo);
+        (input as any).owner = parsed.owner;
+        (input as any).repo = parsed.name;
+        if (!(input as any).repository) {
+          (input as any).repository = resolvedRepo;
+        }
       } else if (matches.length === 0) {
         const reasoning = buildDecisionReason(tool, input);
         await prisma.auditLog.create({
@@ -1672,14 +1701,15 @@ export async function executeToolWithPolicy(
             reason: "Multiple repos matched that name. Use owner/repo.",
           },
         };
-        if (!(input as any).repository) {
-          (input as any).repository = resolvedRepo;
-        }
-        if (!(input as any).owner || !(input as any).repo) {
-          const parsed = parseRepo(resolvedRepo);
-          (input as any).owner = parsed.owner;
-          (input as any).repo = parsed.name;
-        }
+      }
+    }
+
+    if (resolvedRepo.includes("/")) {
+      const parsed = parseRepo(resolvedRepo);
+      (input as any).owner = parsed.owner;
+      (input as any).repo = parsed.name;
+      if (!(input as any).repository) {
+        (input as any).repository = resolvedRepo;
       }
     }
 
@@ -1714,14 +1744,15 @@ export async function executeToolWithPolicy(
         resolvedRepo = match.resourceId.includes("/")
           ? match.resourceId
           : resolvedRepo;
-        (input as any).repo = resolvedRepo;
-        if (!(input as any).repository) {
-          (input as any).repository = resolvedRepo;
-        }
-        if (!(input as any).owner || !(input as any).repo) {
+        if (resolvedRepo.includes("/")) {
           const parsed = parseRepo(resolvedRepo);
           (input as any).owner = parsed.owner;
           (input as any).repo = parsed.name;
+          if (!(input as any).repository) {
+            (input as any).repository = resolvedRepo;
+          }
+        } else {
+          (input as any).repo = resolvedRepo;
         }
       }
     }
