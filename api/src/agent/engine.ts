@@ -436,9 +436,7 @@ ${TOOL_CALL_OUTPUT_RULES}`;
       {
         tool: String(parsed.tool),
         input:
-          parsed.input && typeof parsed.input === "object"
-            ? parsed.input
-            : {},
+          parsed.input && typeof parsed.input === "object" ? parsed.input : {},
       },
     ];
   }
@@ -525,8 +523,7 @@ function questionForField(field: string) {
   if (field === "fromBranch")
     return "Which existing branch should I branch from?";
   if (field === "title") return "What should the issue title be?";
-  if (field === "issueNumbers")
-    return "Which issue number(s) should I target?";
+  if (field === "issueNumbers") return "Which issue number(s) should I target?";
   if (field === "comment") return "What comment should I post?";
   return `I need the ${field} to proceed.`;
 }
@@ -609,10 +606,14 @@ export async function generateAgentPlan(
 
   if (userId && routed.steps.length) {
     const previousOutputs =
-      context.previousStepOutputs && typeof context.previousStepOutputs === "object"
+      context.previousStepOutputs &&
+      typeof context.previousStepOutputs === "object"
         ? context.previousStepOutputs
         : {};
-    const hydrationContext = await buildHydrationContext(userId, previousOutputs);
+    const hydrationContext = await buildHydrationContext(
+      userId,
+      previousOutputs,
+    );
     const hydrator = new ContextHydrator();
     routed.steps = hydrator.hydrate(routed.steps, tools, hydrationContext);
   }
@@ -676,8 +677,7 @@ export function normalizeAgentSteps(
         else if (follow.includes("close")) input.action = "close";
         else if (follow.includes("delete") || follow.includes("remove")) {
           input.action = "close";
-        }
-        else if (follow.includes("reopen")) input.action = "reopen";
+        } else if (follow.includes("reopen")) input.action = "reopen";
         else if (follow.includes("comment")) input.action = "comment";
       }
     }
@@ -802,7 +802,9 @@ export function extractContextFromText(text: string) {
     /branch\s+(?:named|name|called)?\s*([A-Za-z0-9._/-]+)/i,
   );
   if (branchNameMatch) context.branchName = branchNameMatch[1].trim();
-  const fromBranchMatch = text.match(/(?:from|off|based on)\s+([A-Za-z0-9._/-]+)/i);
+  const fromBranchMatch = text.match(
+    /(?:from|off|based on)\s+([A-Za-z0-9._/-]+)/i,
+  );
   if (fromBranchMatch) context.fromBranch = fromBranchMatch[1].trim();
   const lower = text.toLowerCase();
   if (lower.includes("create issue") || lower.includes("open issue")) {
@@ -815,7 +817,10 @@ export function extractContextFromText(text: string) {
     context.action = "close";
   } else if (lower.includes("reopen issue")) {
     context.action = "reopen";
-  } else if (lower.includes("comment on issue") || lower.startsWith("comment ")) {
+  } else if (
+    lower.includes("comment on issue") ||
+    lower.startsWith("comment ")
+  ) {
     context.action = "comment";
   }
   const channelMatch = text.match(/#([A-Za-z0-9_-]+)/);
@@ -928,9 +933,15 @@ export async function getMissingInputQuestion(
     }
   }
 
-  const validation = validateAllSteps(workingSteps, Array.from(toolIndex.values()));
+  const validation = validateAllSteps(
+    workingSteps,
+    Array.from(toolIndex.values()),
+  );
   if (!validation.valid) {
-    return validation.missingFieldQuestion || `I need the ${validation.missingField} to proceed.`;
+    return (
+      validation.missingFieldQuestion ||
+      `I need the ${validation.missingField} to proceed.`
+    );
   }
 
   for (let i = 0; i < steps.length; i += 1) {
@@ -1077,10 +1088,16 @@ export async function generateAgentReply(
 
   if (step.tool === "intent_list_repo_issues") {
     const issues = Array.isArray(result?.result?.issues)
-      ? (result.result.issues as Array<{ number?: number; title?: string; state?: string }>)
+      ? (result.result.issues as Array<{
+          number?: number;
+          title?: string;
+          state?: string;
+        }>)
       : [];
     const state = String(result?.result?.state || step.input?.state || "open");
-    const repo = String(result?.result?.repo || step.input?.repo || "this repository");
+    const repo = String(
+      result?.result?.repo || step.input?.repo || "this repository",
+    );
 
     if (!issues.length) {
       return `I found no ${state} issues in ${repo}.`;
@@ -1388,8 +1405,7 @@ export async function runAgentLoop(runId: string) {
           trace(run, "status", "Repository has issues disabled");
           run.messages.push({
             role: "agent",
-            text:
-              "That repository has GitHub Issues disabled, so I cannot create an issue there. Share another repository with Issues enabled, and I will retry.",
+            text: "That repository has GitHub Issues disabled, so I cannot create an issue there. Share another repository with Issues enabled, and I will retry.",
           });
           return;
         }
@@ -1527,7 +1543,7 @@ export async function executeToolWithPolicy(
   if (
     typeof (input as any)[CF.REPO_OWNER] === "string" &&
     typeof (input as any)[CF.REPO_NAME] === "string" &&
-    !(String((input as any)[CF.REPO_NAME] || "").includes("/"))
+    !String((input as any)[CF.REPO_NAME] || "").includes("/")
   ) {
     const owner = String((input as any)[CF.REPO_OWNER] || "").trim();
     const repo = String((input as any)[CF.REPO_NAME] || "").trim();
@@ -1655,7 +1671,7 @@ export async function executeToolWithPolicy(
         (input as any).repo = resolvedRepo;
         const parsed = parseRepo(resolvedRepo);
         (input as any).owner = parsed.owner;
-        (input as any).repo = parsed.name;
+        (input as any).repo = resolvedRepo;
         if (!(input as any).repository) {
           (input as any).repository = resolvedRepo;
         }
@@ -1707,7 +1723,7 @@ export async function executeToolWithPolicy(
     if (resolvedRepo.includes("/")) {
       const parsed = parseRepo(resolvedRepo);
       (input as any).owner = parsed.owner;
-      (input as any).repo = parsed.name;
+      (input as any).repo = resolvedRepo;
       if (!(input as any).repository) {
         (input as any).repository = resolvedRepo;
       }
@@ -1747,7 +1763,7 @@ export async function executeToolWithPolicy(
         if (resolvedRepo.includes("/")) {
           const parsed = parseRepo(resolvedRepo);
           (input as any).owner = parsed.owner;
-          (input as any).repo = parsed.name;
+          (input as any).repo = resolvedRepo;
           if (!(input as any).repository) {
             (input as any).repository = resolvedRepo;
           }
@@ -2041,8 +2057,29 @@ export async function executeToolWithPolicy(
         };
       }
 
+      if (!repo.includes("/")) {
+        const accessToken =
+          githubTokenFromContext || (await getGithubAccessToken(userId));
+        const repos = await githubListRepos(accessToken);
+        const normalized = repo.toLowerCase();
+        const matches = repos.filter((r) => {
+          const fullName = String(r.fullName || "").toLowerCase();
+          const name = String(r.name || "").toLowerCase();
+          return name === normalized || fullName.endsWith(`/${normalized}`);
+        });
+        if (matches.length === 1 && matches[0].fullName) {
+          repo = matches[0].fullName;
+          (input as any).repo = repo;
+          if (!(input as any).repository) {
+            (input as any).repository = repo;
+          }
+        }
+      }
+
       try {
-        parseRepo(repo);
+        const parsed = parseRepo(repo);
+        (input as any).owner = parsed.owner;
+        (input as any).repo = repo;
       } catch (err: any) {
         const reasoning = buildDecisionReason(tool, input);
         await prisma.auditLog.create({
@@ -2087,9 +2124,30 @@ export async function executeToolWithPolicy(
   }
 
   if (toolInfo.needsRepo && (input as any).repo) {
-    const repo = String((input as any).repo || "");
+    let repo = String((input as any).repo || "");
+    if (!repo.includes("/")) {
+      const accessToken =
+        githubTokenFromContext || (await getGithubAccessToken(userId));
+      const repos = await githubListRepos(accessToken);
+      const normalized = repo.toLowerCase();
+      const matches = repos.filter((r) => {
+        const fullName = String(r.fullName || "").toLowerCase();
+        const name = String(r.name || "").toLowerCase();
+        return name === normalized || fullName.endsWith(`/${normalized}`);
+      });
+      if (matches.length === 1 && matches[0].fullName) {
+        repo = matches[0].fullName;
+        (input as any).repo = repo;
+        if (!(input as any).repository) {
+          (input as any).repository = repo;
+        }
+      }
+    }
+
     try {
-      parseRepo(repo);
+      const parsed = parseRepo(repo);
+      (input as any).owner = parsed.owner;
+      (input as any).repo = repo;
     } catch (err: any) {
       const reasoning = buildDecisionReason(tool, input);
       await prisma.auditLog.create({
@@ -2295,12 +2353,11 @@ export async function executeToolWithPolicy(
     });
 
     return {
-      statusCode:
-        inputValidationMatch
-          ? 400
-          : issuesDisabledMatch || genericIssuesDisabled
-            ? 409
-            : 500,
+      statusCode: inputValidationMatch
+        ? 400
+        : issuesDisabledMatch || genericIssuesDisabled
+          ? 409
+          : 500,
       body: { status: "error", reason: normalizedReason },
     };
   }

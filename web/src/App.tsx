@@ -466,9 +466,9 @@ export default function App() {
         const r = await getAgentRun(accessToken, agentRunId);
         if (!active) return;
         if (r?.status === "not_found") {
+          setPolicyToast("Previous run expired or restarted. You can continue from the current chat context.");
           setAgentRunId(null);
           setAgentRun(null);
-          setAgentMessages([]);
           return;
         }
         if (r?.run) {
